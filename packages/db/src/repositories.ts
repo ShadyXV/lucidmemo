@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, count, desc, eq, isNull, sum } from "drizzle-orm";
 
 import type {
   AssignRecallEntryInput,
@@ -35,6 +35,22 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+async function hardDeleteDream(db: LucidmemoDatabase, dreamId: UUID): Promise<void> {
+  const linkedRecalls = await db.select({ id: recallEntries.id }).from(recallEntries).where(eq(recallEntries.dreamId, dreamId));
+  for (const recall of linkedRecalls) {
+    await db.delete(recallAudio).where(eq(recallAudio.recallEntryId, recall.id));
+  }
+  await db.delete(recallEntries).where(eq(recallEntries.dreamId, dreamId));
+
+  const linkedAnalyses = await db.select({ id: dreamAnalyses.id }).from(dreamAnalyses).where(eq(dreamAnalyses.dreamId, dreamId));
+  for (const analysis of linkedAnalyses) {
+    await db.delete(dreamEntities).where(eq(dreamEntities.analysisId, analysis.id));
+    await db.delete(hvdcRecords).where(eq(hvdcRecords.analysisId, analysis.id));
+  }
+  await db.delete(dreamAnalyses).where(eq(dreamAnalyses.dreamId, dreamId));
+  await db.delete(dreams).where(eq(dreams.id, dreamId));
+}
+
 export class LibSqlSleepSessionRepository implements SleepSessionRepository {
   constructor(private readonly db: LucidmemoDatabase) {}
 
@@ -57,6 +73,14 @@ export class LibSqlSleepSessionRepository implements SleepSessionRepository {
       .set({ deletedAt: nowIso(), deleteReason: reason ?? null })
       .where(eq(sleepSessions.id, id));
   }
+
+  async hardDelete(id: UUID) {
+    const linkedDreams = await this.db.select({ id: dreams.id }).from(dreams).where(eq(dreams.sleepSessionId, id));
+    for (const dream of linkedDreams) {
+      await hardDeleteDream(this.db, dream.id);
+    }
+    await this.db.delete(sleepSessions).where(eq(sleepSessions.id, id));
+  }
 }
 
 export class LibSqlDreamRepository implements DreamRepository {
@@ -77,6 +101,10 @@ export class LibSqlDreamRepository implements DreamRepository {
       .update(dreams)
       .set({ deletedAt: nowIso(), deleteReason: reason ?? null })
       .where(eq(dreams.id, id));
+  }
+
+  async hardDelete(id: UUID) {
+    await hardDeleteDream(this.db, id);
   }
 }
 
@@ -134,11 +162,34 @@ export class LibSqlRecallEntryRepository implements RecallEntryRepository {
     return rows[0] ?? null;
   }
 
+  async updateText(id: UUID, text: string | null) {
+    await this.db.update(recallEntries).set({ text }).where(eq(recallEntries.id, id));
+    const updated = await this.findById(id);
+    if (!updated) {
+      throw new Error(`Recall Entry not found: ${id}`);
+    }
+    return updated;
+  }
+
+  async supersede(originalId: UUID, replacement: Parameters<RecallEntryRepository["supersede"]>[1]) {
+    await this.db.insert(recallEntries).values(replacement);
+    await this.db
+      .update(recallEntries)
+      .set({ isSuperseded: true, supersededByEntryId: replacement.id })
+      .where(eq(recallEntries.id, originalId));
+    return replacement;
+  }
+
   async softDelete(id: UUID, reason?: string) {
     await this.db
       .update(recallEntries)
       .set({ deletedAt: nowIso(), deleteReason: reason ?? null })
       .where(eq(recallEntries.id, id));
+  }
+
+  async hardDelete(id: UUID) {
+    await this.db.delete(recallAudio).where(eq(recallAudio.recallEntryId, id));
+    await this.db.delete(recallEntries).where(eq(recallEntries.id, id));
   }
 }
 
@@ -368,6 +419,90 @@ export class LibSqlDreamQueryRepository {
       nodes: [...nodeCounts.entries()].map(([id, node]) => ({ id, ...node })),
       edges: [...edgeCounts.entries()].map(([id, edge]) => ({ id, ...edge })),
     };
+  }
+}
+
+export interface MediaSummary {
+  databasePath: string | null;
+  recallEntries: number;
+  audioRows: number;
+  totalAudioBytes: number;
+  largestAudio: MediaItem[];
+}
+
+export interface MediaItem {
+  recallEntryId: string;
+  dreamId: string | null;
+  capturedAt: string;
+  audioMimeType: string | null;
+  audioExtension: string | null;
+  audioOriginalName: string | null;
+  audioSizeBytes: number;
+  audioDurationMs: number | null;
+  createdAt: string;
+  deletedAt: string | null;
+  deleteReason: string | null;
+}
+
+export class LibSqlMediaRepository {
+  constructor(private readonly db: LucidmemoDatabase) {}
+
+  async summary(databasePath: string | null, limit = 5): Promise<MediaSummary> {
+    const recallCount = await this.db.select({ value: count() }).from(recallEntries);
+    const audioAggregate = await this.db
+      .select({ count: count(), totalBytes: sum(recallAudio.audioSizeBytes) })
+      .from(recallAudio);
+
+    return {
+      databasePath,
+      recallEntries: recallCount[0]?.value ?? 0,
+      audioRows: audioAggregate[0]?.count ?? 0,
+      totalAudioBytes: Number(audioAggregate[0]?.totalBytes ?? 0),
+      largestAudio: await this.listLargest(limit),
+    };
+  }
+
+  async listLargest(limit = 20): Promise<MediaItem[]> {
+    return this.db
+      .select({
+        recallEntryId: recallAudio.recallEntryId,
+        dreamId: recallEntries.dreamId,
+        capturedAt: recallEntries.capturedAt,
+        audioMimeType: recallAudio.audioMimeType,
+        audioExtension: recallAudio.audioExtension,
+        audioOriginalName: recallAudio.audioOriginalName,
+        audioSizeBytes: recallAudio.audioSizeBytes,
+        audioDurationMs: recallAudio.audioDurationMs,
+        createdAt: recallAudio.createdAt,
+        deletedAt: recallEntries.deletedAt,
+        deleteReason: recallEntries.deleteReason,
+      })
+      .from(recallAudio)
+      .innerJoin(recallEntries, eq(recallEntries.id, recallAudio.recallEntryId))
+      .orderBy(desc(recallAudio.audioSizeBytes))
+      .limit(limit);
+  }
+
+  async inspect(recallEntryId: UUID): Promise<MediaItem | null> {
+    const rows = await this.db
+      .select({
+        recallEntryId: recallAudio.recallEntryId,
+        dreamId: recallEntries.dreamId,
+        capturedAt: recallEntries.capturedAt,
+        audioMimeType: recallAudio.audioMimeType,
+        audioExtension: recallAudio.audioExtension,
+        audioOriginalName: recallAudio.audioOriginalName,
+        audioSizeBytes: recallAudio.audioSizeBytes,
+        audioDurationMs: recallAudio.audioDurationMs,
+        createdAt: recallAudio.createdAt,
+        deletedAt: recallEntries.deletedAt,
+        deleteReason: recallEntries.deleteReason,
+      })
+      .from(recallAudio)
+      .innerJoin(recallEntries, eq(recallEntries.id, recallAudio.recallEntryId))
+      .where(eq(recallAudio.recallEntryId, recallEntryId))
+      .limit(1);
+    return rows[0] ?? null;
   }
 }
 

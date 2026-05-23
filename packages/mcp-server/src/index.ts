@@ -12,8 +12,14 @@ import { z } from "zod";
 
 import {
   runGraphCommand,
+  runDeleteCommand,
+  runDoctorStorageCommand,
+  runMediaInspectCommand,
+  runMediaListCommand,
   runQueryCommand,
   runReanalyzeCommand,
+  runRecallCorrectCommand,
+  runRecallEditCommand,
   runRecordCommand,
   runSleepCommand,
 } from "@lucidmemo/cli";
@@ -230,16 +236,101 @@ export function createLucidmemoMcpServer(context: McpContext = DEFAULT_CONTEXT):
       `delete_${entity}`,
       {
         title: `Delete ${entity}`,
-        description: `Soft-delete a ${entity}. Hard delete is intentionally deferred to explicit Stage 8 behavior.`,
+        description: `Delete a ${entity}. Soft delete is default; hard delete requires confirmHardDelete.`,
         inputSchema: {
           ...globalFlagsSchema,
           id: z.string(),
           reason: z.string().optional(),
+          hard: z.boolean().optional(),
+          confirmHardDelete: z.boolean().optional(),
         },
       },
-      async (args) => jsonTool(await softDelete(entity, args, context)),
+      async (args) => jsonTool(await deleteEntity(entity, args, context)),
     );
   }
+
+  server.registerTool(
+    "edit_recall_text",
+    {
+      title: "Edit Recall Text",
+      description: "Fix transcription or typo text in place without creating a correction entry.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        recallEntryId: z.string(),
+        text: z.string(),
+      },
+    },
+    async (args) =>
+      jsonTool(
+        await runRecallEditCommand(
+          toFlags({ "recall-id": args.recallEntryId, text: args.text, db: args.db, config: args.config }),
+          cliContext(context),
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "correct_recall_content",
+    {
+      title: "Correct Recall Content",
+      description: "Create a superseding Recall Entry when remembered dream content changes.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        recallEntryId: z.string(),
+        text: z.string(),
+        notes: z.string().optional(),
+      },
+    },
+    async (args) =>
+      jsonTool(
+        await runRecallCorrectCommand(
+          toFlags({ "recall-id": args.recallEntryId, text: args.text, notes: args.notes, db: args.db, config: args.config }),
+          cliContext(context),
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "doctor_storage",
+    {
+      title: "Doctor Storage",
+      description: "Summarize journal storage and largest audio rows without loading audio blobs.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        limit: z.number().int().positive().optional(),
+      },
+    },
+    async (args) => jsonTool(await runDoctorStorageCommand(toFlags(args), cliContext(context))),
+  );
+
+  server.registerTool(
+    "list_media",
+    {
+      title: "List Media",
+      description: "List largest stored audio items by metadata only.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        limit: z.number().int().positive().optional(),
+      },
+    },
+    async (args) => jsonTool(await runMediaListCommand(toFlags(args), cliContext(context))),
+  );
+
+  server.registerTool(
+    "inspect_media",
+    {
+      title: "Inspect Media",
+      description: "Inspect one Recall Entry audio item by metadata only.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        recallEntryId: z.string(),
+      },
+    },
+    async (args) =>
+      jsonTool(
+        await runMediaInspectCommand(toFlags({ "recall-id": args.recallEntryId, db: args.db, config: args.config }), cliContext(context)),
+      ),
+  );
 
   server.registerPrompt(
     "lucidmemo/capture",
@@ -458,17 +549,23 @@ async function unmergeEntities(args: { mergeId: string; reversedBy?: string; db?
   return new LibSqlEntityRepository(createDatabase({ url: databaseUrl })).unmerge(args.mergeId, args.reversedBy ?? "user");
 }
 
-async function softDelete(
+async function deleteEntity(
   entity: "recall" | "dream" | "session",
-  args: { id: UUID; reason?: string; db?: string; config?: string },
+  args: { id: UUID; reason?: string; hard?: boolean; confirmHardDelete?: boolean; db?: string; config?: string },
   context: McpContext,
 ) {
-  const { databaseUrl } = await prepareDb(args, context);
-  const db = createDatabase({ url: databaseUrl });
-  if (entity === "recall") await new LibSqlRecallEntryRepository(db).softDelete(args.id, args.reason);
-  if (entity === "dream") await new LibSqlDreamRepository(db).softDelete(args.id, args.reason);
-  if (entity === "session") await new LibSqlSleepSessionRepository(db).softDelete(args.id, args.reason);
-  return { deleted: true, entity, id: args.id, mode: "soft" };
+  return runDeleteCommand(
+    toFlags({
+      entity,
+      id: args.id,
+      reason: args.reason,
+      hard: args.hard,
+      "confirm-hard-delete": args.confirmHardDelete,
+      db: args.db,
+      config: args.config,
+    }),
+    cliContext(context),
+  );
 }
 
 async function prepareDb(args: { db?: string; config?: string }, context: McpContext) {

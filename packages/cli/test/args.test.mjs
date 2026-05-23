@@ -6,8 +6,14 @@ import { join } from "node:path";
 
 import {
   runGraphCommand,
+  runDeleteCommand,
+  runDoctorStorageCommand,
   runIndexCommand,
+  runMediaInspectCommand,
+  runMediaListCommand,
   runQueryCommand,
+  runRecallCorrectCommand,
+  runRecallEditCommand,
   runReanalyzeCommand,
   runRecordCommand,
   runSleepCommand,
@@ -186,4 +192,120 @@ test("graph returns current-analysis entity cooccurrence data", async () => {
   assert.ok(graph.nodes.some((node) => node.id === "person:brother"));
   assert.ok(graph.nodes.some((node) => node.id === "setting:school"));
   assert.ok(graph.edges.length > 0);
+});
+
+test("recall edit updates typo text in place", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I saw a scool hallway.",
+    },
+    testContext(home),
+  );
+
+  const edited = await runRecallEditCommand(
+    {
+      "recall-id": record.recallEntry.id,
+      text: "I saw a school hallway.",
+    },
+    testContext(home),
+  );
+
+  assert.equal(edited.id, record.recallEntry.id);
+  assert.equal(edited.text, "I saw a school hallway.");
+  assert.equal(edited.supersedesEntryId, null);
+});
+
+test("recall correction creates superseding entry and reanalysis hides original", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I saw a school hallway.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+
+  const corrected = await runRecallCorrectCommand(
+    {
+      "recall-id": record.recallEntry.id,
+      text: "I saw a school hallway and then checked my hands.",
+    },
+    testContext(home),
+  );
+  const results = await runQueryCommand({ text: "hands" }, testContext(home));
+
+  assert.equal(corrected.replacement.supersedesEntryId, record.recallEntry.id);
+  assert.equal(corrected.original.isSuperseded, true);
+  assert.equal(corrected.analysis?.dreamId, record.dream.id);
+  assert.match(results[0].canonicalText, /checked my hands/);
+});
+
+test("delete is soft by default and hard delete is explicit", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I remembered a fragment.",
+    },
+    testContext(home),
+  );
+
+  const softDeleted = await runDeleteCommand(
+    {
+      entity: "recall",
+      id: record.recallEntry.id,
+      reason: "duplicate",
+    },
+    testContext(home),
+  );
+
+  await assert.rejects(
+    runDeleteCommand(
+      {
+        entity: "recall",
+        id: record.recallEntry.id,
+        hard: true,
+      },
+      testContext(home),
+    ),
+    /confirm-hard-delete/,
+  );
+
+  const hardDeleted = await runDeleteCommand(
+    {
+      entity: "recall",
+      id: record.recallEntry.id,
+      hard: true,
+      "confirm-hard-delete": true,
+    },
+    testContext(home),
+  );
+
+  assert.equal(softDeleted.mode, "soft");
+  assert.equal(hardDeleted.mode, "hard");
+});
+
+test("storage diagnostics list audio metadata without returning blobs", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const audioPath = join(home, "dream.webm");
+  writeFileSync(audioPath, Buffer.from("fake audio bytes"));
+  const record = await runRecordCommand(
+    {
+      audio: audioPath,
+      "duration-ms": "1000",
+      "mime-type": "audio/webm",
+    },
+    testContext(home),
+  );
+
+  const storage = await runDoctorStorageCommand({}, testContext(home));
+  const list = await runMediaListCommand({ limit: "1" }, testContext(home));
+  const inspected = await runMediaInspectCommand({ "recall-id": record.recallEntry.id }, testContext(home));
+
+  assert.equal(storage.audioRows, 1);
+  assert.equal(storage.totalAudioBytes, Buffer.byteLength("fake audio bytes"));
+  assert.equal(list[0].recallEntryId, record.recallEntry.id);
+  assert.equal(inspected.audioMimeType, "audio/webm");
+  assert.equal(Object.hasOwn(inspected, "audioBlob"), false);
 });

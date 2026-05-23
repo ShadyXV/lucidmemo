@@ -31,12 +31,14 @@ export interface SleepSessionRepository {
   upsert(session: SleepSession): Promise<SleepSession>;
   findById(id: UUID): Promise<SleepSession | null>;
   softDelete(id: UUID, reason?: string): Promise<void>;
+  hardDelete(id: UUID): Promise<void>;
 }
 
 export interface DreamRepository {
   create(dream: DreamRecord): Promise<DreamRecord>;
   findById(id: UUID): Promise<DreamRecord | null>;
   softDelete(id: UUID, reason?: string): Promise<void>;
+  hardDelete(id: UUID): Promise<void>;
 }
 
 export interface RecallEntryRepository {
@@ -45,7 +47,10 @@ export interface RecallEntryRepository {
   findById(id: UUID): Promise<RecallEntry | null>;
   listByDreamId(dreamId: UUID): Promise<RecallEntry[]>;
   findAudio(recallEntryId: UUID): Promise<RecallAudio | null>;
+  updateText(id: UUID, text: string | null): Promise<RecallEntry>;
+  supersede(originalId: UUID, replacement: RecallEntry): Promise<RecallEntry>;
   softDelete(id: UUID, reason?: string): Promise<void>;
+  hardDelete(id: UUID): Promise<void>;
 }
 
 export interface DreamAnalysisRepository {

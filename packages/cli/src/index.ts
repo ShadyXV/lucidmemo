@@ -34,6 +34,7 @@ import {
   LibSqlDreamAnalysisRepository,
   LibSqlDreamQueryRepository,
   LibSqlDreamRepository,
+  LibSqlMediaRepository,
   LibSqlRecallEntryRepository,
   LibSqlSleepSessionRepository,
 } from "@lucidmemo/db";
@@ -64,6 +65,13 @@ interface RecordCommandResult {
   sleepSession: SleepSession | null;
   analysis: DreamAnalysis | null;
   audioStored: boolean;
+}
+
+interface DeleteCommandResult {
+  deleted: true;
+  entity: "recall" | "dream" | "session";
+  id: string;
+  mode: "soft" | "hard";
 }
 
 const DEFAULT_CONTEXT: CliContext = {
@@ -111,6 +119,42 @@ export async function main(argv = process.argv.slice(2), context = DEFAULT_CONTE
 
     if (parsed.command === "graph") {
       const result = await runGraphCommand(parsed.flags, context);
+      context.output.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (parsed.command === "recall-edit") {
+      const result = await runRecallEditCommand(parsed.flags, context);
+      context.output.log(`Recall Entry edited: ${result.id}`);
+      return;
+    }
+
+    if (parsed.command === "recall-correct") {
+      const result = await runRecallCorrectCommand(parsed.flags, context);
+      context.output.log(`Recall Entry corrected: ${result.original.id} -> ${result.replacement.id}`);
+      return;
+    }
+
+    if (parsed.command === "delete") {
+      const result = await runDeleteCommand(parsed.flags, context);
+      context.output.log(`${result.mode === "hard" ? "Hard-deleted" : "Soft-deleted"} ${result.entity}: ${result.id}`);
+      return;
+    }
+
+    if (parsed.command === "doctor storage") {
+      const result = await runDoctorStorageCommand(parsed.flags, context);
+      context.output.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (parsed.command === "media list") {
+      const result = await runMediaListCommand(parsed.flags, context);
+      context.output.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (parsed.command === "media inspect") {
+      const result = await runMediaInspectCommand(parsed.flags, context);
       context.output.log(JSON.stringify(result, null, 2));
       return;
     }
@@ -310,6 +354,126 @@ export async function runGraphCommand(
   const { databaseUrl } = await prepareCliDatabase(flags, context);
   const db = createDatabase({ url: databaseUrl });
   return new LibSqlDreamQueryRepository(db).graph();
+}
+
+export async function runRecallEditCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<RecallEntry> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  return new LibSqlRecallEntryRepository(db).updateText(requiredFlag(flags, "recall-id"), requiredFlag(flags, "text"));
+}
+
+export async function runRecallCorrectCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<{ original: RecallEntry; replacement: RecallEntry; analysis: DreamAnalysis | null }> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  const recalls = new LibSqlRecallEntryRepository(db);
+  const analyses = new LibSqlDreamAnalysisRepository(db);
+  const original = await recalls.findById(requiredFlag(flags, "recall-id"));
+  if (!original) {
+    throw new Error(`Recall Entry not found: ${requiredFlag(flags, "recall-id")}`);
+  }
+
+  const now = context.now().toISOString();
+  const replacement: RecallEntry = {
+    ...original,
+    id: optionalFlag(flags, "new-recall-id") ?? randomUUID(),
+    text: requiredFlag(flags, "text"),
+    capturedAt: now,
+    captureMethod: "cli",
+    sourceAgent: null,
+    transcriptionStatus: "complete",
+    supersedesEntryId: original.id,
+    supersededByEntryId: null,
+    hasAudio: false,
+    audioDeletedAt: null,
+    isSuperseded: false,
+    notes: optionalFlag(flags, "notes") ?? original.notes,
+    deletedAt: null,
+    deleteReason: null,
+  };
+
+  await recalls.supersede(original.id, replacement);
+  const analysis = replacement.dreamId
+    ? await createDreamAnalysis({
+        dreamId: replacement.dreamId,
+        recalls,
+        analyses,
+        now,
+      })
+    : null;
+
+  return { original: { ...original, isSuperseded: true, supersededByEntryId: replacement.id }, replacement, analysis };
+}
+
+export async function runDeleteCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<DeleteCommandResult> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  const entity = parseDeleteEntity(requiredFlag(flags, "entity"));
+  const id = requiredFlag(flags, "id");
+  const hard = Boolean(flags.hard);
+
+  if (hard && !flags["confirm-hard-delete"]) {
+    throw new Error("Hard delete requires --confirm-hard-delete.");
+  }
+
+  if (entity === "recall") {
+    const recalls = new LibSqlRecallEntryRepository(db);
+    if (hard) await recalls.hardDelete(id);
+    else await recalls.softDelete(id, optionalFlag(flags, "reason"));
+  }
+
+  if (entity === "dream") {
+    const dreams = new LibSqlDreamRepository(db);
+    if (hard) await dreams.hardDelete(id);
+    else await dreams.softDelete(id, optionalFlag(flags, "reason"));
+  }
+
+  if (entity === "session") {
+    const sleepSessions = new LibSqlSleepSessionRepository(db);
+    if (hard) await sleepSessions.hardDelete(id);
+    else await sleepSessions.softDelete(id, optionalFlag(flags, "reason"));
+  }
+
+  return { deleted: true, entity, id, mode: hard ? "hard" : "soft" };
+}
+
+export async function runDoctorStorageCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+) {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  return new LibSqlMediaRepository(db).summary(fileURLToPath(databaseUrl), optionalIntegerFlag(flags, "limit") ?? 5);
+}
+
+export async function runMediaListCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+) {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  return new LibSqlMediaRepository(db).listLargest(optionalIntegerFlag(flags, "limit") ?? 20);
+}
+
+export async function runMediaInspectCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+) {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  const item = await new LibSqlMediaRepository(db).inspect(requiredFlag(flags, "recall-id"));
+  if (!item) {
+    throw new Error(`Recall Entry audio not found: ${requiredFlag(flags, "recall-id")}`);
+  }
+  return item;
 }
 
 async function prepareCliDatabase(flags: Record<string, string | boolean>, context: CliContext) {
@@ -583,12 +747,54 @@ function getTranscriptionStatus(hasAudio: boolean, text: string | null): Transcr
 function parseArgs(argv: string[]): ParsedArgs {
   const [command = null, ...rest] = argv;
   const flags: Record<string, string | boolean> = {};
+  let start = 0;
 
-  for (let index = 0; index < rest.length; index += 1) {
+  if (command === "doctor" && rest[0] === "storage") {
+    start = 1;
+  } else if (command === "media" && (rest[0] === "list" || rest[0] === "inspect")) {
+    start = 1;
+    if (rest[0] === "inspect" && rest[1] && !rest[1].startsWith("--")) {
+      flags["recall-id"] = rest[1];
+      start = 2;
+    }
+  } else if (command === "delete") {
+    if (rest[0] && !rest[0].startsWith("--")) {
+      flags.entity = rest[0];
+      start = 1;
+      if (rest[1] && !rest[1].startsWith("--")) {
+        flags.id = rest[1];
+        start = 2;
+      }
+    }
+  }
+
+  for (let index = start; index < rest.length; index += 1) {
     const token = rest[index];
     if (!token.startsWith("--")) {
       if (command === "query" && flags.text === undefined) {
         flags.text = token;
+        continue;
+      }
+      if (command === "delete") {
+        if (flags.entity === undefined) {
+          flags.entity = token;
+          continue;
+        }
+        if (flags.id === undefined) {
+          flags.id = token;
+          continue;
+        }
+      }
+      if (command === "doctor" && token === "storage") {
+        flags["_doctor-command"] = token;
+        continue;
+      }
+      if (command === "media" && (token === "list" || token === "inspect")) {
+        flags["_media-command"] = token;
+        continue;
+      }
+      if (command === "media" && flags["_media-command"] === "inspect" && flags["recall-id"] === undefined) {
+        flags["recall-id"] = token;
         continue;
       }
       throw new Error(`Unexpected argument: ${token}`);
@@ -604,7 +810,16 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  return { command, flags };
+  return { command: commandPath(command, rest, flags), flags };
+}
+
+function commandPath(command: string | null, rest: string[], flags: Record<string, string | boolean>): string | null {
+  if (command === "doctor" && (rest[0] === "storage" || flags["_doctor-command"] === "storage")) return "doctor storage";
+  if (command === "media") {
+    const mediaCommand = flags["_media-command"] ?? rest.find((token) => token === "list" || token === "inspect");
+    if (mediaCommand === "list" || mediaCommand === "inspect") return `media ${mediaCommand}`;
+  }
+  return command;
 }
 
 function optionalFlag(flags: Record<string, string | boolean>, key: string): string | undefined {
@@ -645,6 +860,13 @@ function parseRetention(value: string): AudioRetention {
     return value;
   }
   throw new Error("--retention must be one of: keep, delete_after_transcription, never_store.");
+}
+
+function parseDeleteEntity(value: string): "recall" | "dream" | "session" {
+  if (value === "recall" || value === "dream" || value === "session") {
+    return value;
+  }
+  throw new Error("--entity must be one of: recall, dream, session.");
 }
 
 function parseCsvFlag(flags: Record<string, string | boolean>, key: string): string[] {
@@ -711,6 +933,13 @@ function printHelp(context: CliContext): void {
   lucidmemo index
   lucidmemo query --text "hands lucid" [--from YYYY-MM-DD] [--lucidity 3+]
   lucidmemo graph
+  lucidmemo recall-edit --recall-id <id> --text "fixed typo"
+  lucidmemo recall-correct --recall-id <id> --text "remembered correction"
+  lucidmemo delete recall <id> [--reason "..."]
+  lucidmemo delete recall <id> --hard --confirm-hard-delete
+  lucidmemo doctor storage
+  lucidmemo media list --largest
+  lucidmemo media inspect <recall-id>
 
 Global flags:
   --config PATH   Config TOML path, defaults to ~/.lucidmemo/config.toml
