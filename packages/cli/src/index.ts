@@ -16,6 +16,9 @@ import {
   type CaptureMethod,
   type DreamAnalysis,
   type DreamAnalysisBundle,
+  type DreamGraph,
+  type DreamQueryFilters,
+  type DreamQueryResult,
   type DreamRecord,
   type HvdCRecord,
   type ISODate,
@@ -29,6 +32,7 @@ import {
   createDatabase,
   initializeDatabase,
   LibSqlDreamAnalysisRepository,
+  LibSqlDreamQueryRepository,
   LibSqlDreamRepository,
   LibSqlRecallEntryRepository,
   LibSqlSleepSessionRepository,
@@ -90,6 +94,24 @@ export async function main(argv = process.argv.slice(2), context = DEFAULT_CONTE
     if (parsed.command === "reanalyze") {
       const result = await runReanalyzeCommand(parsed.flags, context);
       context.output.log(`Dream Analysis created: ${result.id}`);
+      return;
+    }
+
+    if (parsed.command === "index") {
+      const result = await runIndexCommand(parsed.flags, context);
+      context.output.log(`Indexed current Dream Analyses: ${result.updated}`);
+      return;
+    }
+
+    if (parsed.command === "query") {
+      const result = await runQueryCommand(parsed.flags, context);
+      printQueryResult(result, context);
+      return;
+    }
+
+    if (parsed.command === "graph") {
+      const result = await runGraphCommand(parsed.flags, context);
+      context.output.log(JSON.stringify(result, null, 2));
       return;
     }
 
@@ -245,6 +267,57 @@ export async function runReanalyzeCommand(
     analyses,
     now: context.now().toISOString(),
   });
+}
+
+export async function runIndexCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<{ updated: number }> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  const queries = new LibSqlDreamQueryRepository(db);
+  const analyses = new LibSqlDreamAnalysisRepository(db);
+  const embeddingAdapter = new HashEmbeddingAdapter();
+  const rows = await queries.listCurrent();
+
+  for (const row of rows) {
+    const embedding = await embeddingAdapter.embed({ text: row.canonicalText });
+    await analyses.updateEmbedding(row.analysisId, embedding.embedding);
+  }
+
+  return { updated: rows.length };
+}
+
+export async function runQueryCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<DreamQueryResult[]> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  const queries = new LibSqlDreamQueryRepository(db);
+  const filters = parseQueryFilters(flags);
+  const queryEmbedding = filters.text
+    ? (await new HashEmbeddingAdapter().embed({ text: filters.text })).embedding
+    : undefined;
+  const limit = optionalIntegerFlag(flags, "limit") ?? 10;
+  return (await queries.query(filters, queryEmbedding)).slice(0, limit);
+}
+
+export async function runGraphCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<DreamGraph> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  return new LibSqlDreamQueryRepository(db).graph();
+}
+
+async function prepareCliDatabase(flags: Record<string, string | boolean>, context: CliContext) {
+  const config = loadCliConfig(flags, context);
+  const databaseUrl = databasePathToUrl(config.database.path, context.homeDir);
+  context.ensureDir(dirname(fileURLToPath(databaseUrl)));
+  await initializeDatabase({ url: databaseUrl });
+  return { config, databaseUrl };
 }
 
 async function createDreamAnalysis(input: {
@@ -466,6 +539,32 @@ function loadCliConfig(flags: Record<string, string | boolean>, context: CliCont
     : config;
 }
 
+function parseQueryFilters(flags: Record<string, string | boolean>): DreamQueryFilters {
+  const positionalText = optionalFlag(flags, "text") ?? optionalFlag(flags, "q");
+  const lucidityRaw = optionalFlag(flags, "lucidity");
+  const filters: DreamQueryFilters = {
+    text: positionalText,
+    date: optionalFlag(flags, "date"),
+    from: optionalFlag(flags, "from"),
+    to: optionalFlag(flags, "to"),
+    symbol: optionalFlag(flags, "symbol"),
+    person: optionalFlag(flags, "person"),
+    setting: optionalFlag(flags, "setting"),
+    emotion: optionalFlag(flags, "emotion"),
+    object: optionalFlag(flags, "object"),
+    interaction: optionalFlag(flags, "interaction"),
+    technique: optionalFlag(flags, "technique"),
+  };
+
+  if (lucidityRaw?.endsWith("+")) {
+    filters.lucidityMin = parseNonNegativeInteger(lucidityRaw.slice(0, -1), "--lucidity");
+  } else if (lucidityRaw !== undefined) {
+    filters.lucidity = parseNonNegativeInteger(lucidityRaw, "--lucidity");
+  }
+
+  return filters;
+}
+
 function databasePathToUrl(databasePath: string, homeDir: string): `file:${string}` {
   const expanded =
     databasePath === DEFAULT_DATABASE_PATH || databasePath.startsWith("~/")
@@ -488,6 +587,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index];
     if (!token.startsWith("--")) {
+      if (command === "query" && flags.text === undefined) {
+        flags.text = token;
+        continue;
+      }
       throw new Error(`Unexpected argument: ${token}`);
     }
 
@@ -526,9 +629,13 @@ function optionalIntegerFlag(flags: Record<string, string | boolean>, key: strin
     return null;
   }
 
+  return parseNonNegativeInteger(value, `--${key}`);
+}
+
+function parseNonNegativeInteger(value: string, label: string): number {
   const numberValue = Number(value);
   if (!Number.isInteger(numberValue) || numberValue < 0) {
-    throw new Error(`--${key} must be a non-negative integer.`);
+    throw new Error(`${label} must be a non-negative integer.`);
   }
   return numberValue;
 }
@@ -580,12 +687,30 @@ function printRecordResult(result: RecordCommandResult, context: CliContext): vo
   }
 }
 
+function printQueryResult(results: DreamQueryResult[], context: CliContext): void {
+  if (results.length === 0) {
+    context.output.log("No matching dreams.");
+    return;
+  }
+
+  for (const result of results) {
+    const score = result.score === null ? "" : ` score=${result.score.toFixed(3)}`;
+    context.output.log(
+      `${result.dreamDate} ${result.dreamId}${score} ${result.title ? result.title : ""}`.trim(),
+    );
+    context.output.log(result.canonicalText);
+  }
+}
+
 function printHelp(context: CliContext): void {
   context.output.log(`lucidmemo commands:
   lucidmemo record --text "..." [--audio ./dream.m4a] [--new-dream --dream-date YYYY-MM-DD]
   lucidmemo record --audio ./dream.m4a --duration-ms 120000
   lucidmemo sleep --session-date YYYY-MM-DD [--sleep-started-at ISO] [--woke-at ISO] [--quality 1-5]
   lucidmemo reanalyze --dream-id <id>
+  lucidmemo index
+  lucidmemo query --text "hands lucid" [--from YYYY-MM-DD] [--lucidity 3+]
+  lucidmemo graph
 
 Global flags:
   --config PATH   Config TOML path, defaults to ~/.lucidmemo/config.toml

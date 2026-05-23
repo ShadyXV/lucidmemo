@@ -51,6 +51,7 @@ export interface RecallEntryRepository {
 export interface DreamAnalysisRepository {
   createCurrent(bundle: DreamAnalysisBundle): Promise<DreamAnalysis>;
   findCurrentByDreamId(dreamId: UUID): Promise<DreamAnalysis | null>;
+  updateEmbedding(id: UUID, embedding: Uint8Array): Promise<void>;
   softDelete(id: UUID, reason?: string): Promise<void>;
 }
 

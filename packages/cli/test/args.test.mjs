@@ -4,7 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runReanalyzeCommand, runRecordCommand, runSleepCommand } from "../dist/index.js";
+import {
+  runGraphCommand,
+  runIndexCommand,
+  runQueryCommand,
+  runReanalyzeCommand,
+  runRecordCommand,
+  runSleepCommand,
+} from "../dist/index.js";
 
 function testContext(homeDir) {
   return {
@@ -114,4 +121,69 @@ test("reanalyze creates a new current analysis from linked recall text", async (
   assert.equal(analysis.dreamId, record.dream.id);
   assert.notEqual(analysis.id, record.analysis.id);
   assert.equal(analysis.realityCheck, "hands");
+});
+
+test("query filters current analyses without loading audio", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  await runRecordCommand(
+    {
+      text: "I looked at my hands and became lucid.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+  await runRecordCommand(
+    {
+      text: "I was walking through a school feeling confused.",
+      "new-dream": true,
+      "dream-date": "2026-05-23",
+    },
+    testContext(home),
+  );
+
+  const results = await runQueryCommand(
+    {
+      text: "hands lucid",
+      lucidity: "3+",
+    },
+    testContext(home),
+  );
+
+  assert.equal(results.length, 1);
+  assert.match(results[0].canonicalText, /hands/);
+  assert.equal(results[0].lucidityLevel, 4);
+  assert.equal(typeof results[0].score, "number");
+});
+
+test("index regenerates embeddings for current analyses", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  await runRecordCommand(
+    {
+      text: "A mirror appeared in the bedroom.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+
+  const result = await runIndexCommand({}, testContext(home));
+  assert.equal(result.updated, 1);
+});
+
+test("graph returns current-analysis entity cooccurrence data", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  await runRecordCommand(
+    {
+      text: "My brother was in a school and I felt happy.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+
+  const graph = await runGraphCommand({}, testContext(home));
+  assert.ok(graph.nodes.some((node) => node.id === "person:brother"));
+  assert.ok(graph.nodes.some((node) => node.id === "setting:school"));
+  assert.ok(graph.edges.length > 0);
 });
