@@ -1,8 +1,16 @@
+<p>
+  <img src="docs/assets/logo-mark-96.png" alt="" width="32" height="32" />
+</p>
+
 # lucidmemo
 
-lucidmemo is a local-first dream journal for fast recall capture and later analysis. V1 is audio-first, free, open source, and built around a simple rule: save the Recall Entry first, assign and analyze it later.
+lucidmemo is a local-first dream journal for agent-assisted recall capture and later analysis. V1 is audio-first, free, open source, and built around a simple rule: save the Recall Entry first, assign and analyze it later.
 
 The current workspace includes a TypeScript monorepo with a CLI, MCP server, libSQL storage, local config, audio metadata validation, deterministic extraction/embedding adapters, query/graph commands, correction history, deletion controls, diagnostics, and export.
+
+The main use case is connecting lucidmemo to an MCP-capable agent client, such as OpenCode, Hermes, Claude, or another local assistant. The agent can capture dream recall, ask clarification questions, query the journal, and read graph data through structured MCP tools.
+
+The visual documentation page lives at [`docs/index.html`](docs/index.html).
 
 ## Setup
 
@@ -46,7 +54,7 @@ Create or update sleep metadata:
 lucidmemo sleep --session-date 2026-05-22 --sleep-started-at 2026-05-22T22:30:00.000Z --woke-at 2026-05-23T06:45:00.000Z --quality 4
 ```
 
-## Analysis And Search
+## Analysis and search
 
 ```sh
 lucidmemo reanalyze --dream-id <dream-id>
@@ -57,7 +65,7 @@ lucidmemo graph
 
 Dream Analysis is versioned. Normal query and graph output use the current analysis and ignore deleted or superseded recall.
 
-## Corrections And Deletes
+## Corrections and deletes
 
 Use edit for typo or transcription fixes:
 
@@ -108,4 +116,19 @@ pnpm --filter @lucidmemo/mcp-server build
 node packages/mcp-server/dist/index.js
 ```
 
-The MCP server exposes the same capture model as the CLI: record recall immediately, leave ambiguous linkage unassigned, and ask for clarification instead of silently merging late recall.
+Most MCP clients accept a server entry like this. Use an absolute path unless your client starts from this repository:
+
+```json
+{
+  "mcpServers": {
+    "lucidmemo": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/lucidmemo/packages/mcp-server/dist/index.js"
+      ]
+    }
+  }
+}
+```
+
+The MCP server exposes the same capture model as the CLI: record recall immediately, leave ambiguous linkage unassigned, and ask for clarification instead of silently merging late recall. It also provides `lucidmemo/capture` and `lucidmemo/query` prompts for agent workflows.
