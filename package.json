@@ -11,6 +11,7 @@
     "lint": "turbo run lint"
   },
   "devDependencies": {
+    "@types/node": "^22.15.29",
     "drizzle-kit": "^0.31.10",
     "turbo": "^2.5.4",
     "typescript": "^5.8.3"
