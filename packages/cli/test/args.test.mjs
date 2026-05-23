@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runRecordCommand, runSleepCommand } from "../dist/index.js";
+import { runReanalyzeCommand, runRecordCommand, runSleepCommand } from "../dist/index.js";
 
 function testContext(homeDir) {
   return {
@@ -71,6 +71,8 @@ test("record can create a sleep session and dream before linking recall", async 
   assert.equal(result.sleepSession?.sessionDate, "2026-05-22");
   assert.equal(result.dream?.dreamDate, "2026-05-22");
   assert.equal(result.recallEntry.dreamId, result.dream?.id);
+  assert.equal(result.analysis?.dreamId, result.dream?.id);
+  assert.match(result.analysis?.canonicalText ?? "", /lucid/);
 });
 
 test("sleep upserts sleep metadata", async () => {
@@ -89,4 +91,27 @@ test("sleep upserts sleep metadata", async () => {
   assert.equal(result.sessionDate, "2026-05-22");
   assert.equal(result.sleepQuality, 4);
   assert.deepEqual(result.supplements, ["magnesium", "tea"]);
+});
+
+test("reanalyze creates a new current analysis from linked recall text", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I looked at my hands and became lucid.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+
+  const analysis = await runReanalyzeCommand(
+    {
+      "dream-id": record.dream.id,
+    },
+    testContext(home),
+  );
+
+  assert.equal(analysis.dreamId, record.dream.id);
+  assert.notEqual(analysis.id, record.analysis.id);
+  assert.equal(analysis.realityCheck, "hands");
 });

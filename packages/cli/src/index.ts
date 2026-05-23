@@ -14,7 +14,10 @@ import {
   validateAudioInput,
   type AudioRetention,
   type CaptureMethod,
+  type DreamAnalysis,
+  type DreamAnalysisBundle,
   type DreamRecord,
+  type HvdCRecord,
   type ISODate,
   type ISODateTime,
   type RecallAudio,
@@ -25,10 +28,13 @@ import {
 import {
   createDatabase,
   initializeDatabase,
+  LibSqlDreamAnalysisRepository,
   LibSqlDreamRepository,
   LibSqlRecallEntryRepository,
   LibSqlSleepSessionRepository,
 } from "@lucidmemo/db";
+import { HashEmbeddingAdapter } from "@lucidmemo/embedding";
+import { HeuristicExtractionAdapter } from "@lucidmemo/extraction";
 
 export type LucidmemoPackage = "cli";
 
@@ -52,6 +58,7 @@ interface RecordCommandResult {
   recallEntry: RecallEntry;
   dream: DreamRecord | null;
   sleepSession: SleepSession | null;
+  analysis: DreamAnalysis | null;
   audioStored: boolean;
 }
 
@@ -80,6 +87,12 @@ export async function main(argv = process.argv.slice(2), context = DEFAULT_CONTE
       return;
     }
 
+    if (parsed.command === "reanalyze") {
+      const result = await runReanalyzeCommand(parsed.flags, context);
+      context.output.log(`Dream Analysis created: ${result.id}`);
+      return;
+    }
+
     printHelp(context);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -101,6 +114,7 @@ export async function runRecordCommand(
   const sleepSessions = new LibSqlSleepSessionRepository(db);
   const dreams = new LibSqlDreamRepository(db);
   const recalls = new LibSqlRecallEntryRepository(db);
+  const analyses = new LibSqlDreamAnalysisRepository(db);
 
   const now = context.now().toISOString();
   const text = optionalFlag(flags, "text") ?? null;
@@ -156,10 +170,20 @@ export async function runRecordCommand(
     audio: storedAudio,
   });
 
+  const analysis = assignment.dream
+    ? await createDreamAnalysis({
+        dreamId: assignment.dream.id,
+        recalls,
+        analyses,
+        now,
+      })
+    : null;
+
   return {
     recallEntry,
     dream: assignment.dream,
     sleepSession: assignment.sleepSession,
+    analysis,
     audioStored: Boolean(storedAudio),
   };
 }
@@ -194,6 +218,105 @@ export async function runSleepCommand(
   };
 
   return sleepSessions.upsert(sleepSession);
+}
+
+export async function runReanalyzeCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<DreamAnalysis> {
+  const config = loadCliConfig(flags, context);
+  const databaseUrl = databasePathToUrl(config.database.path, context.homeDir);
+  context.ensureDir(dirname(fileURLToPath(databaseUrl)));
+  await initializeDatabase({ url: databaseUrl });
+
+  const db = createDatabase({ url: databaseUrl });
+  const dreams = new LibSqlDreamRepository(db);
+  const recalls = new LibSqlRecallEntryRepository(db);
+  const analyses = new LibSqlDreamAnalysisRepository(db);
+  const dreamId = requiredFlag(flags, "dream-id");
+  const dream = await dreams.findById(dreamId);
+  if (!dream) {
+    throw new Error(`Dream Record not found: ${dreamId}`);
+  }
+
+  return createDreamAnalysis({
+    dreamId,
+    recalls,
+    analyses,
+    now: context.now().toISOString(),
+  });
+}
+
+async function createDreamAnalysis(input: {
+  dreamId: string;
+  recalls: LibSqlRecallEntryRepository;
+  analyses: LibSqlDreamAnalysisRepository;
+  now: ISODateTime;
+}): Promise<DreamAnalysis> {
+  const recallEntries = await input.recalls.listByDreamId(input.dreamId);
+  const canonicalSourceText = recallEntries
+    .filter((entry) => entry.text !== null && entry.text.trim().length > 0)
+    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
+    .map((entry) => entry.text)
+    .join("\n\n");
+
+  if (!canonicalSourceText) {
+    throw new Error("Dream Analysis requires at least one text Recall Entry.");
+  }
+
+  const extraction = await new HeuristicExtractionAdapter().extract({ text: canonicalSourceText });
+  const embedding = await new HashEmbeddingAdapter().embed({ text: extraction.canonicalText });
+  const analysisId = randomUUID();
+  const bundle: DreamAnalysisBundle = {
+    analysis: {
+      id: analysisId,
+      dreamId: input.dreamId,
+      createdAt: input.now,
+      isCurrent: true,
+      sourceAdapter: extraction.sourceAdapter,
+      sourceModel: extraction.sourceModel,
+      promptVersion: extraction.promptVersion,
+      correctionSource: null,
+      canonicalText: extraction.canonicalText,
+      lucidityLevel: extraction.lucidityLevel,
+      inductionTech: extraction.inductionTech,
+      realityCheck: extraction.realityCheck,
+      controlLevel: extraction.controlLevel,
+      onsetType: extraction.onsetType,
+      dreamSigns: extraction.dreamSigns,
+      emotions: extraction.emotions,
+      embedding: embedding.embedding,
+      deletedAt: null,
+      deleteReason: null,
+    },
+    hvdcRecord: buildHvdCRecord(analysisId, extraction.hvdc),
+    entities: [],
+  };
+
+  return input.analyses.createCurrent(bundle);
+}
+
+function buildHvdCRecord(analysisId: string, hvdc: HvdCRecordFields): HvdCRecord {
+  return {
+    analysisId,
+    characters: hvdc.characters,
+    socialInteractions: hvdc.socialInteractions,
+    activities: hvdc.activities,
+    emotions: hvdc.emotions,
+    settings: hvdc.settings,
+    objects: hvdc.objects,
+    outcomes: hvdc.outcomes,
+  };
+}
+
+interface HvdCRecordFields {
+  characters: unknown[];
+  socialInteractions: unknown[];
+  activities: unknown[];
+  emotions: unknown[];
+  settings: unknown[];
+  objects: unknown[];
+  outcomes: unknown[];
 }
 
 function buildRecallAudio(input: {
@@ -447,6 +570,9 @@ function printRecordResult(result: RecordCommandResult, context: CliContext): vo
 
   if (result.dream) {
     context.output.log(`Dream Record linked: ${result.dream.id}`);
+    if (result.analysis) {
+      context.output.log(`Dream Analysis created: ${result.analysis.id}`);
+    }
   } else {
     context.output.log(
       "Recall Entry is unassigned. Clarify whether it belongs to an existing Dream Record or a new Dream Record.",
@@ -459,6 +585,7 @@ function printHelp(context: CliContext): void {
   lucidmemo record --text "..." [--audio ./dream.m4a] [--new-dream --dream-date YYYY-MM-DD]
   lucidmemo record --audio ./dream.m4a --duration-ms 120000
   lucidmemo sleep --session-date YYYY-MM-DD [--sleep-started-at ISO] [--woke-at ISO] [--quality 1-5]
+  lucidmemo reanalyze --dream-id <id>
 
 Global flags:
   --config PATH   Config TOML path, defaults to ~/.lucidmemo/config.toml

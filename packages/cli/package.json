@@ -18,6 +18,8 @@
   },
   "dependencies": {
     "@lucidmemo/core": "workspace:*",
-    "@lucidmemo/db": "workspace:*"
+    "@lucidmemo/db": "workspace:*",
+    "@lucidmemo/embedding": "workspace:*",
+    "@lucidmemo/extraction": "workspace:*"
   }
 }

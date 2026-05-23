@@ -83,7 +83,10 @@ export class LibSqlRecallEntryRepository implements RecallEntryRepository {
   async create(input: CreateRecallEntryInput) {
     await this.db.insert(recallEntries).values(input.recallEntry);
     if (input.audio) {
-      await this.db.insert(recallAudio).values(input.audio);
+      await this.db.insert(recallAudio).values({
+        ...input.audio,
+        audioBlob: Buffer.from(input.audio.audioBlob),
+      });
     }
     return input.recallEntry;
   }
@@ -104,6 +107,19 @@ export class LibSqlRecallEntryRepository implements RecallEntryRepository {
   async findById(id: UUID) {
     const rows = await this.db.select().from(recallEntries).where(eq(recallEntries.id, id)).limit(1);
     return rows[0] ?? null;
+  }
+
+  async listByDreamId(dreamId: UUID) {
+    return this.db
+      .select()
+      .from(recallEntries)
+      .where(
+        and(
+          eq(recallEntries.dreamId, dreamId),
+          isNull(recallEntries.deletedAt),
+          eq(recallEntries.isSuperseded, false),
+        ),
+      );
   }
 
   async findAudio(recallEntryId: UUID) {
@@ -132,11 +148,22 @@ export class LibSqlDreamAnalysisRepository implements DreamAnalysisRepository {
       .set({ isCurrent: false })
       .where(and(eq(dreamAnalyses.dreamId, bundle.analysis.dreamId), isNull(dreamAnalyses.deletedAt)));
 
-    await this.db.insert(dreamAnalyses).values(bundle.analysis);
+    await this.db.insert(dreamAnalyses).values({
+      ...bundle.analysis,
+      embedding: bundle.analysis.embedding ? Buffer.from(bundle.analysis.embedding) : null,
+    });
     await this.db.insert(hvdcRecords).values(bundle.hvdcRecord);
 
     if (bundle.entities.length > 0) {
-      await this.db.insert(entities).values(bundle.entities).onConflictDoNothing();
+      await this.db
+        .insert(entities)
+        .values(
+          bundle.entities.map((entity) => ({
+            ...entity,
+            embedding: entity.embedding ? Buffer.from(entity.embedding) : null,
+          })),
+        )
+        .onConflictDoNothing();
       await this.db.insert(dreamEntities).values(
         bundle.entities.map((entity) => ({
           analysisId: bundle.analysis.id,

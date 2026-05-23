@@ -43,6 +43,7 @@ export interface RecallEntryRepository {
   create(input: CreateRecallEntryInput): Promise<RecallEntry>;
   assign(input: AssignRecallEntryInput): Promise<RecallEntry>;
   findById(id: UUID): Promise<RecallEntry | null>;
+  listByDreamId(dreamId: UUID): Promise<RecallEntry[]>;
   findAudio(recallEntryId: UUID): Promise<RecallAudio | null>;
   softDelete(id: UUID, reason?: string): Promise<void>;
 }

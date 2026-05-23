@@ -29,6 +29,12 @@ importers:
       '@lucidmemo/db':
         specifier: workspace:*
         version: link:../db
+      '@lucidmemo/embedding':
+        specifier: workspace:*
+        version: link:../embedding
+      '@lucidmemo/extraction':
+        specifier: workspace:*
+        version: link:../extraction
 
   packages/core:
     dependencies:
