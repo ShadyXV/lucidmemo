@@ -34,6 +34,7 @@ import {
   LibSqlDreamAnalysisRepository,
   LibSqlDreamQueryRepository,
   LibSqlDreamRepository,
+  LibSqlJournalExportRepository,
   LibSqlMediaRepository,
   LibSqlRecallEntryRepository,
   LibSqlSleepSessionRepository,
@@ -120,6 +121,12 @@ export async function main(argv = process.argv.slice(2), context = DEFAULT_CONTE
     if (parsed.command === "graph") {
       const result = await runGraphCommand(parsed.flags, context);
       context.output.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (parsed.command === "export") {
+      const result = await runExportCommand(parsed.flags, context);
+      context.output.log(result);
       return;
     }
 
@@ -354,6 +361,21 @@ export async function runGraphCommand(
   const { databaseUrl } = await prepareCliDatabase(flags, context);
   const db = createDatabase({ url: databaseUrl });
   return new LibSqlDreamQueryRepository(db).graph();
+}
+
+export async function runExportCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<string> {
+  const { databaseUrl } = await prepareCliDatabase(flags, context);
+  const db = createDatabase({ url: databaseUrl });
+  const journal = await new LibSqlJournalExportRepository(db).export({ provenance: Boolean(flags.provenance) });
+  const format = optionalFlag(flags, "format") ?? "json";
+
+  if (format === "json") return JSON.stringify(journal, null, 2);
+  if (format === "markdown" || format === "md") return journalToMarkdown(journal);
+  if (format === "csv") return journalToCsv(journal);
+  throw new Error("--format must be one of: json, markdown, csv.");
 }
 
 export async function runRecallEditCommand(
@@ -869,6 +891,89 @@ function parseDeleteEntity(value: string): "recall" | "dream" | "session" {
   throw new Error("--entity must be one of: recall, dream, session.");
 }
 
+function journalToMarkdown(journal: Awaited<ReturnType<LibSqlJournalExportRepository["export"]>>): string {
+  const dreams = journal.dreams as Array<{ id: string; dreamDate: string; title: string | null }>;
+  const analyses = new Map(
+    (journal.dreamAnalyses as Array<{ dreamId: string; canonicalText: string; lucidityLevel: number | null; dreamSigns: string[]; emotions: string[] }>).map(
+      (analysis) => [analysis.dreamId, analysis],
+    ),
+  );
+  const recalls = journal.recallEntries as Array<{ id: string; dreamId: string | null; capturedAt: string; text: string | null }>;
+
+  const lines = [
+    "# lucidmemo Export",
+    "",
+    `Exported at: ${journal.exportedAt}`,
+    `Provenance included: ${journal.provenance ? "yes" : "no"}`,
+    "",
+  ];
+
+  for (const dream of dreams.sort((a, b) => a.dreamDate.localeCompare(b.dreamDate))) {
+    const analysis = analyses.get(dream.id);
+    lines.push(`## ${dream.dreamDate}${dream.title ? ` - ${dream.title}` : ""}`, "");
+    if (analysis) {
+      lines.push(analysis.canonicalText, "");
+      lines.push(`Lucidity: ${analysis.lucidityLevel ?? ""}`);
+      lines.push(`Dream signs: ${analysis.dreamSigns.join(", ")}`);
+      lines.push(`Emotions: ${analysis.emotions.join(", ")}`, "");
+    }
+    const dreamRecalls = recalls.filter((recall) => recall.dreamId === dream.id);
+    if (dreamRecalls.length > 0) {
+      lines.push("### Recall Entries", "");
+      for (const recall of dreamRecalls) {
+        lines.push(`- ${recall.capturedAt}: ${recall.text ?? "[audio pending transcription]"}`);
+      }
+      lines.push("");
+    }
+  }
+
+  const unassigned = recalls.filter((recall) => recall.dreamId === null);
+  if (unassigned.length > 0) {
+    lines.push("## Unassigned Recall Entries", "");
+    for (const recall of unassigned) {
+      lines.push(`- ${recall.capturedAt}: ${recall.text ?? "[audio pending transcription]"}`);
+    }
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
+function journalToCsv(journal: Awaited<ReturnType<LibSqlJournalExportRepository["export"]>>): string {
+  const analyses = new Map(
+    (journal.dreamAnalyses as Array<{
+      dreamId: string;
+      canonicalText: string;
+      lucidityLevel: number | null;
+      inductionTech: string | null;
+      dreamSigns: string[];
+      emotions: string[];
+    }>).map((analysis) => [analysis.dreamId, analysis]),
+  );
+  const rows = [
+    ["dream_id", "dream_date", "title", "lucidity_level", "induction_tech", "dream_signs", "emotions", "canonical_text"],
+  ];
+
+  for (const dream of journal.dreams as Array<{ id: string; dreamDate: string; title: string | null }>) {
+    const analysis = analyses.get(dream.id);
+    rows.push([
+      dream.id,
+      dream.dreamDate,
+      dream.title ?? "",
+      analysis?.lucidityLevel === null || analysis?.lucidityLevel === undefined ? "" : String(analysis.lucidityLevel),
+      analysis?.inductionTech ?? "",
+      analysis?.dreamSigns.join("|") ?? "",
+      analysis?.emotions.join("|") ?? "",
+      analysis?.canonicalText ?? "",
+    ]);
+  }
+
+  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function csvCell(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
 function parseCsvFlag(flags: Record<string, string | boolean>, key: string): string[] {
   const value = optionalFlag(flags, key);
   if (!value) {
@@ -933,6 +1038,7 @@ function printHelp(context: CliContext): void {
   lucidmemo index
   lucidmemo query --text "hands lucid" [--from YYYY-MM-DD] [--lucidity 3+]
   lucidmemo graph
+  lucidmemo export --format json|markdown|csv [--provenance]
   lucidmemo recall-edit --recall-id <id> --text "fixed typo"
   lucidmemo recall-correct --recall-id <id> --text "remembered correction"
   lucidmemo delete recall <id> [--reason "..."]

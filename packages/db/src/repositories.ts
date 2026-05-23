@@ -506,6 +506,90 @@ export class LibSqlMediaRepository {
   }
 }
 
+export interface JournalExportOptions {
+  provenance: boolean;
+}
+
+export interface JournalExport {
+  exportedAt: string;
+  provenance: boolean;
+  sleepSessions: unknown[];
+  dreams: unknown[];
+  recallEntries: unknown[];
+  recallAudio: unknown[];
+  dreamAnalyses: unknown[];
+  hvdcRecords: unknown[];
+  entities: unknown[];
+  entityMerges: unknown[];
+}
+
+export class LibSqlJournalExportRepository {
+  constructor(private readonly db: LucidmemoDatabase) {}
+
+  async export(options: JournalExportOptions): Promise<JournalExport> {
+    const [sleepRows, dreamRows, recallRows, audioRows, analysisRows, hvdcRows, entityRows, mergeRows] = await Promise.all([
+      this.db.select().from(sleepSessions),
+      this.db.select().from(dreams),
+      this.db.select().from(recallEntries),
+      this.db
+        .select({
+          recallEntryId: recallAudio.recallEntryId,
+          audioMimeType: recallAudio.audioMimeType,
+          audioExtension: recallAudio.audioExtension,
+          audioOriginalName: recallAudio.audioOriginalName,
+          audioSizeBytes: recallAudio.audioSizeBytes,
+          audioDurationMs: recallAudio.audioDurationMs,
+          createdAt: recallAudio.createdAt,
+        })
+        .from(recallAudio),
+      this.db.select().from(dreamAnalyses),
+      this.db.select().from(hvdcRecords),
+      this.db
+        .select({
+          id: entities.id,
+          type: entities.type,
+          name: entities.name,
+        })
+        .from(entities),
+      this.db.select().from(entityMerges),
+    ]);
+
+    const analyses = options.provenance
+      ? analysisRows.map(serializeEmbedding)
+      : analysisRows.filter((analysis) => analysis.isCurrent && analysis.deletedAt === null).map(serializeEmbedding);
+    const analysisIds = new Set(analyses.map((analysis) => String((analysis as { id: string }).id)));
+    const recallEntryIds = new Set(
+      (options.provenance
+        ? recallRows
+        : recallRows.filter((recall) => recall.deletedAt === null && !recall.isSuperseded)
+      ).map((recall) => recall.id),
+    );
+
+    return {
+      exportedAt: nowIso(),
+      provenance: options.provenance,
+      sleepSessions: options.provenance ? sleepRows : sleepRows.filter((session) => session.deletedAt === null),
+      dreams: options.provenance ? dreamRows : dreamRows.filter((dream) => dream.deletedAt === null),
+      recallEntries: options.provenance
+        ? recallRows
+        : recallRows.filter((recall) => recall.deletedAt === null && !recall.isSuperseded),
+      recallAudio: audioRows.filter((audio) => recallEntryIds.has(audio.recallEntryId)),
+      dreamAnalyses: analyses,
+      hvdcRecords: hvdcRows.filter((record) => analysisIds.has(record.analysisId)),
+      entities: options.provenance ? entityRows : [],
+      entityMerges: options.provenance ? mergeRows : [],
+    };
+  }
+}
+
+function serializeEmbedding<T extends { embedding?: Buffer | Uint8Array | null }>(row: T): Omit<T, "embedding"> & { embeddingBase64: string | null } {
+  const { embedding, ...rest } = row;
+  return {
+    ...rest,
+    embeddingBase64: embedding ? Buffer.from(embedding).toString("base64") : null,
+  };
+}
+
 function matchesFilters(row: CurrentAnalysisRow, filters: DreamQueryFilters): boolean {
   if (filters.date && row.dreamDate !== filters.date) return false;
   if (filters.from && row.dreamDate < filters.from) return false;

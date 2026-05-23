@@ -8,6 +8,7 @@ import {
   runGraphCommand,
   runDeleteCommand,
   runDoctorStorageCommand,
+  runExportCommand,
   runIndexCommand,
   runMediaInspectCommand,
   runMediaListCommand,
@@ -308,4 +309,78 @@ test("storage diagnostics list audio metadata without returning blobs", async ()
   assert.equal(list[0].recallEntryId, record.recallEntry.id);
   assert.equal(inspected.audioMimeType, "audio/webm");
   assert.equal(Object.hasOwn(inspected, "audioBlob"), false);
+});
+
+test("export emits json markdown and csv with provenance opt-in", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I checked my hands near a mirror and became lucid.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+      title: "Mirror",
+    },
+    testContext(home),
+  );
+  await runRecallCorrectCommand(
+    {
+      "recall-id": record.recallEntry.id,
+      text: "I checked my hands near a mirror and became lucid in a school.",
+    },
+    testContext(home),
+  );
+
+  const json = JSON.parse(await runExportCommand({ format: "json" }, testContext(home)));
+  const provenanceJson = JSON.parse(await runExportCommand({ format: "json", provenance: true }, testContext(home)));
+  const markdown = await runExportCommand({ format: "markdown" }, testContext(home));
+  const csv = await runExportCommand({ format: "csv" }, testContext(home));
+
+  assert.equal(json.provenance, false);
+  assert.equal(json.recallEntries.length, 1);
+  assert.equal(provenanceJson.provenance, true);
+  assert.equal(provenanceJson.recallEntries.length, 2);
+  assert.match(markdown, /# lucidmemo Export/);
+  assert.match(markdown, /Mirror/);
+  assert.match(csv, /dream_id,dream_date,title/);
+  assert.match(csv, /Mirror/);
+});
+
+test("full integration flow covers capture assignment analysis query delete diagnostics export", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const audioPath = join(home, "dream.webm");
+  writeFileSync(audioPath, Buffer.from("fake audio bytes"));
+  const audioOnly = await runRecordCommand(
+    {
+      audio: audioPath,
+      "duration-ms": "1000",
+      "mime-type": "audio/webm",
+    },
+    testContext(home),
+  );
+  const linked = await runRecordCommand(
+    {
+      text: "I met my brother at school and checked my hands.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+  const query = await runQueryCommand({ text: "brother school" }, testContext(home));
+  const storage = await runDoctorStorageCommand({}, testContext(home));
+  const deleted = await runDeleteCommand(
+    {
+      entity: "recall",
+      id: audioOnly.recallEntry.id,
+      reason: "test cleanup",
+    },
+    testContext(home),
+  );
+  const exported = JSON.parse(await runExportCommand({ format: "json", provenance: true }, testContext(home)));
+
+  assert.equal(audioOnly.recallEntry.transcriptionStatus, "pending");
+  assert.equal(linked.analysis?.dreamId, linked.dream.id);
+  assert.equal(query.length, 1);
+  assert.equal(storage.audioRows, 1);
+  assert.equal(deleted.mode, "soft");
+  assert.ok(exported.recallEntries.some((entry) => entry.id === audioOnly.recallEntry.id && entry.deletedAt !== null));
 });

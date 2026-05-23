@@ -14,6 +14,7 @@ import {
   runGraphCommand,
   runDeleteCommand,
   runDoctorStorageCommand,
+  runExportCommand,
   runMediaInspectCommand,
   runMediaListCommand,
   runQueryCommand,
@@ -330,6 +331,20 @@ export function createLucidmemoMcpServer(context: McpContext = DEFAULT_CONTEXT):
       jsonTool(
         await runMediaInspectCommand(toFlags({ "recall-id": args.recallEntryId, db: args.db, config: args.config }), cliContext(context)),
       ),
+  );
+
+  server.registerTool(
+    "export_journal",
+    {
+      title: "Export Journal",
+      description: "Export the local journal as JSON, Markdown, or CSV. Provenance is opt-in.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        format: z.enum(["json", "markdown", "csv"]).default("json"),
+        provenance: z.boolean().optional(),
+      },
+    },
+    async (args) => jsonTool({ export: await runExportCommand(toFlags(args), cliContext(context)) }),
   );
 
   server.registerPrompt(
