@@ -18,6 +18,7 @@ import {
   runReanalyzeCommand,
   runRecordCommand,
   runSleepCommand,
+  runSubmitAnalysisCommand,
 } from "../dist/index.js";
 
 function testContext(homeDir) {
@@ -130,6 +131,141 @@ test("reanalyze creates a new current analysis from linked recall text", async (
   assert.equal(analysis.realityCheck, "hands");
 });
 
+test("submit-analysis creates a current agent analysis and preserves prior analysis", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I met my brother in a school.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+  const file = join(home, "analysis.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      dreamId: record.dream.id,
+      canonicalText: "I met my brother at a glowing train station and became lucid.",
+      sourceAgent: "OpenClaw",
+      sourceModel: "hermes-analysis",
+      lucidityLevel: 4,
+      dreamSigns: ["train station"],
+      emotions: ["wonder"],
+      hvdc: {
+        characters: ["brother"],
+        settings: ["train station"],
+        objects: ["ticket"],
+      },
+      entities: [
+        { type: "person", name: "Brother", context: "waited near the platform" },
+        { type: "place", name: "Train Station" },
+      ],
+    }),
+  );
+
+  const analysis = await runSubmitAnalysisCommand({ file }, testContext(home));
+  const query = await runQueryCommand({ text: "glowing train", lucidity: "4" }, testContext(home));
+  const exportJson = JSON.parse(await runExportCommand({ format: "json", provenance: true }, testContext(home)));
+
+  assert.equal(analysis.dreamId, record.dream.id);
+  assert.notEqual(analysis.id, record.analysis.id);
+  assert.equal(analysis.sourceAdapter, "agent-submitted");
+  assert.equal(analysis.sourceModel, "OpenClaw/hermes-analysis");
+  assert.equal(analysis.promptVersion, "agent-analysis-v1");
+  assert.equal(analysis.correctionSource, "agent");
+  assert.equal(query.length, 1);
+  assert.match(query[0].canonicalText, /glowing train station/);
+  assert.equal(exportJson.dreamAnalyses.filter((item) => item.dreamId === record.dream.id).length, 2);
+  assert.ok(exportJson.dreamAnalyses.some((item) => item.id === record.analysis.id && item.isCurrent === false));
+  assert.ok(exportJson.dreamAnalyses.some((item) => item.id === analysis.id && item.isCurrent === true));
+});
+
+test("submit-analysis validates required fields and entity types", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const missing = join(home, "missing.json");
+  writeFileSync(missing, JSON.stringify({ canonicalText: "No dream id.", sourceAgent: "OpenClaw", sourceModel: "Hermes" }));
+
+  await assert.rejects(runSubmitAnalysisCommand({ file: missing }, testContext(home)), /dreamId/);
+
+  const nonexistent = join(home, "nonexistent.json");
+  writeFileSync(
+    nonexistent,
+    JSON.stringify({
+      dreamId: "missing-dream",
+      canonicalText: "A structured analysis for a missing dream.",
+      sourceAgent: "OpenClaw",
+      sourceModel: "Hermes",
+    }),
+  );
+
+  await assert.rejects(runSubmitAnalysisCommand({ file: nonexistent }, testContext(home)), /Dream Record not found/);
+
+  const record = await runRecordCommand(
+    {
+      text: "I saw a mirror.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+  const invalidEntity = join(home, "invalid-entity.json");
+  writeFileSync(
+    invalidEntity,
+    JSON.stringify({
+      dreamId: record.dream.id,
+      canonicalText: "I saw a mirror.",
+      sourceAgent: "OpenClaw",
+      sourceModel: "Hermes",
+      entities: [{ type: "myth", name: "mirror" }],
+    }),
+  );
+
+  await assert.rejects(runSubmitAnalysisCommand({ file: invalidEntity }, testContext(home)), /entity type/);
+
+  const emptyCanonical = join(home, "empty-canonical.json");
+  writeFileSync(
+    emptyCanonical,
+    JSON.stringify({
+      dreamId: record.dream.id,
+      canonicalText: "  ",
+      sourceAgent: "OpenClaw",
+      sourceModel: "Hermes",
+    }),
+  );
+
+  await assert.rejects(runSubmitAnalysisCommand({ file: emptyCanonical }, testContext(home)), /canonicalText/);
+});
+
+test("submit-analysis defaults missing structured arrays to empty arrays", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "I remembered a quiet room.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+  const file = join(home, "minimal-analysis.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      dreamId: record.dream.id,
+      canonicalText: "I remembered a quiet room.",
+      sourceAgent: "Hermes",
+      sourceModel: "structured-v1",
+    }),
+  );
+
+  const analysis = await runSubmitAnalysisCommand({ file }, testContext(home));
+  const query = await runQueryCommand({ text: "quiet room" }, testContext(home));
+
+  assert.deepEqual(analysis.dreamSigns, []);
+  assert.deepEqual(analysis.emotions, []);
+  assert.equal(query.length, 1);
+});
+
 test("query filters current analyses without loading audio", async () => {
   const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
   await runRecordCommand(
@@ -192,6 +328,45 @@ test("graph returns current-analysis entity cooccurrence data", async () => {
   const graph = await runGraphCommand({}, testContext(home));
   assert.ok(graph.nodes.some((node) => node.id === "person:brother"));
   assert.ok(graph.nodes.some((node) => node.id === "setting:school"));
+  assert.ok(graph.edges.length > 0);
+});
+
+test("graph includes submitted HVdC and entity data without duplicate obvious terms", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lucidmemo-cli-"));
+  const record = await runRecordCommand(
+    {
+      text: "A blank fragment.",
+      "new-dream": true,
+      "dream-date": "2026-05-22",
+    },
+    testContext(home),
+  );
+  const file = join(home, "analysis.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      dreamId: record.dream.id,
+      canonicalText: "I spoke with Maya beside a glass elevator.",
+      sourceAgent: "Hermes",
+      sourceModel: "structured-v1",
+      hvdc: {
+        characters: ["Maya"],
+        objects: ["glass elevator"],
+      },
+      entities: [
+        { type: "person", name: "maya" },
+        { type: "symbol", name: "glass elevator" },
+      ],
+    }),
+  );
+
+  await runSubmitAnalysisCommand({ file }, testContext(home));
+  const graph = await runGraphCommand({}, testContext(home));
+  const mayaNodes = graph.nodes.filter((node) => node.id === "person:maya");
+
+  assert.equal(mayaNodes.length, 1);
+  assert.ok(graph.nodes.some((node) => node.id === "symbol:glass elevator"));
+  assert.ok(graph.nodes.some((node) => node.id === "object:glass elevator"));
   assert.ok(graph.edges.length > 0);
 });
 

@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import {
+  createSubmittedDreamAnalysis,
   runGraphCommand,
   runDeleteCommand,
   runDoctorStorageCommand,
@@ -58,6 +59,22 @@ const globalFlagsSchema = {
   db: z.string().optional(),
   config: z.string().optional(),
 };
+
+const submittedEntitySchema = z.object({
+  type: z.enum(["person", "place", "symbol", "object", "emotion"]),
+  name: z.string(),
+  context: z.string().optional(),
+});
+
+const submittedHvdCSchema = z.object({
+  characters: z.array(z.unknown()).optional(),
+  socialInteractions: z.array(z.unknown()).optional(),
+  activities: z.array(z.unknown()).optional(),
+  emotions: z.array(z.unknown()).optional(),
+  settings: z.array(z.unknown()).optional(),
+  objects: z.array(z.unknown()).optional(),
+  outcomes: z.array(z.unknown()).optional(),
+});
 
 export function createLucidmemoMcpServer(context: McpContext = DEFAULT_CONTEXT): McpServer {
   const server = new McpServer({
@@ -152,6 +169,32 @@ export function createLucidmemoMcpServer(context: McpContext = DEFAULT_CONTEXT):
       },
     },
     async (args) => jsonTool(await runReanalyzeCommand(toFlags({ "dream-id": args.dreamId, db: args.db, config: args.config }), cliContext(context))),
+  );
+
+  server.registerTool(
+    "submit_dream_analysis",
+    {
+      title: "Submit Dream Analysis",
+      description: "Store structured dream analysis returned by OpenClaw, Hermes, or another MCP agent as the current official Dream Analysis.",
+      inputSchema: {
+        ...globalFlagsSchema,
+        dreamId: z.string(),
+        canonicalText: z.string(),
+        sourceAgent: z.string(),
+        sourceModel: z.string(),
+        promptVersion: z.string().optional(),
+        lucidityLevel: z.number().optional(),
+        inductionTech: z.string().optional(),
+        realityCheck: z.string().optional(),
+        controlLevel: z.number().optional(),
+        onsetType: z.string().optional(),
+        dreamSigns: z.array(z.string()).optional(),
+        emotions: z.array(z.string()).optional(),
+        hvdc: submittedHvdCSchema.optional(),
+        entities: z.array(submittedEntitySchema).optional(),
+      },
+    },
+    async (args) => jsonTool(await submitDreamAnalysis(args, context)),
   );
 
   server.registerTool(
@@ -523,6 +566,54 @@ async function extractDreamStructure(args: { dreamId: string; db?: string; confi
   const existing = await new LibSqlDreamAnalysisRepository(db).findCurrentByDreamId(args.dreamId);
   if (existing) return existing;
   return runReanalyzeCommand(toFlags({ "dream-id": args.dreamId, db: args.db, config: args.config }), cliContext(context));
+}
+
+async function submitDreamAnalysis(
+  args: {
+    dreamId: string;
+    canonicalText: string;
+    sourceAgent: string;
+    sourceModel: string;
+    promptVersion?: string;
+    lucidityLevel?: number;
+    inductionTech?: string;
+    realityCheck?: string;
+    controlLevel?: number;
+    onsetType?: string;
+    dreamSigns?: string[];
+    emotions?: string[];
+    hvdc?: {
+      characters?: unknown[];
+      socialInteractions?: unknown[];
+      activities?: unknown[];
+      emotions?: unknown[];
+      settings?: unknown[];
+      objects?: unknown[];
+      outcomes?: unknown[];
+    };
+    entities?: Array<{ type: "person" | "place" | "symbol" | "object" | "emotion"; name: string; context?: string }>;
+    db?: string;
+    config?: string;
+  },
+  context: McpContext,
+) {
+  const { databaseUrl } = await prepareDb(args, context);
+  const db = createDatabase({ url: databaseUrl });
+  const analysis = await createSubmittedDreamAnalysis({
+    input: args,
+    dreams: new LibSqlDreamRepository(db),
+    analyses: new LibSqlDreamAnalysisRepository(db),
+    now: context.now().toISOString(),
+  });
+
+  return {
+    analysisId: analysis.id,
+    dreamId: analysis.dreamId,
+    isCurrent: analysis.isCurrent,
+    sourceAdapter: analysis.sourceAdapter,
+    sourceModel: analysis.sourceModel,
+    promptVersion: analysis.promptVersion,
+  };
 }
 
 async function getDream(args: { dreamId: string; db?: string; config?: string }, context: McpContext) {

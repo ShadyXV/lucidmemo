@@ -147,7 +147,7 @@
           A local dream journal built for agents first, with a CLI for direct control.
         </p>
         <p class="mt-6 max-w-2xl text-lg leading-reading text-zinc-400">
-          Connect lucidmemo to an MCP-capable agent client, such as OpenCode, Hermes, Claude, or another local assistant. The agent can capture fragile recall, ask clarification questions, and query your journal without sending the database to a hosted app.
+          Connect lucidmemo to an MCP-capable agent client, such as OpenClaw, Hermes, Claude, or another local assistant. The agent can capture fragile recall, submit structured analysis, ask clarification questions, and query your journal without sending the database to a hosted app.
         </p>
 
         <div class="mt-8 flex flex-wrap gap-3">
@@ -172,7 +172,7 @@
           </div>
           <div class="border-t rule pt-4">
             <dt class="font-mono text-zinc-500">first users</dt>
-            <dd class="mt-1 text-zinc-200">people using OpenCode, Hermes, Claude, and other MCP agent clients</dd>
+            <dd class="mt-1 text-zinc-200">people using OpenClaw, Hermes, Claude, and other MCP agent clients</dd>
           </div>
         </dl>
       </aside>
@@ -186,7 +186,7 @@
       <div class="grid gap-4">
         <div class="panel rounded-2xl p-5">
           <p class="text-lg leading-reading text-zinc-300">
-            The original use case is simple: wake up, tell an agent what you remember, and let that agent call lucidmemo through MCP. The agent can transcribe, save the raw recall, ask where it belongs, and later search patterns across the journal.
+            The original use case is simple: wake up, tell an agent what you remember, and let that agent call lucidmemo through MCP. The agent can transcribe, save the raw recall, ask where it belongs, submit structured dream analysis, and later search patterns across the journal.
           </p>
         </div>
         <div class="grid gap-4 md:grid-cols-2">
@@ -201,6 +201,10 @@
           <article class="border-t rule pt-5">
             <h3 class="text-lg font-bold text-zinc-100">Query through tools</h3>
             <p class="mt-2 leading-reading text-zinc-400">Agents use <code class="font-mono text-sm text-violet-200">get_dreams</code>, <code class="font-mono text-sm text-violet-200">get_dream</code>, and <code class="font-mono text-sm text-violet-200">get_dream_graph</code> instead of scraping exported files.</p>
+          </article>
+          <article class="border-t rule pt-5">
+            <h3 class="text-lg font-bold text-zinc-100">Submit official analysis</h3>
+            <p class="mt-2 leading-reading text-zinc-400">OpenClaw, Hermes, and other agents call <code class="font-mono text-sm text-violet-200">submit_dream_analysis</code> when they have canonical text, lucidity signals, HVdC structure, and entities.</p>
           </article>
           <article class="border-t rule pt-5">
             <h3 class="text-lg font-bold text-zinc-100">Keep the journal local</h3>
@@ -229,6 +233,7 @@ pnpm test
 <span class="text-zinc-500"># capture recall</span>
 lucidmemo record --text "I checked my hands and became lucid."
 lucidmemo record --audio ./dream.webm --duration-ms 120000 --mime-type audio/webm
+lucidmemo submit-analysis --file analysis.json
 
 <span class="text-zinc-500"># search later</span>
 lucidmemo query --text "hands lucid" --lucidity 3+
@@ -259,7 +264,7 @@ lucidmemo graph</code></pre>
         <article class="panel rounded-xl p-5">
           <span class="font-mono text-sm text-amber-200">03</span>
           <h3 class="mt-5 text-xl font-bold text-zinc-50">Analyze And Query</h3>
-          <p class="mt-3 leading-reading text-zinc-400">Extract entities, lucidity signals, emotions, and graph relationships from the current analysis.</p>
+          <p class="mt-3 leading-reading text-zinc-400">Use local extraction or agent-submitted structure, then query entities, lucidity signals, emotions, and graph relationships from the current analysis.</p>
         </article>
       </div>
     </section>
@@ -284,7 +289,11 @@ lucidmemo graph</code></pre>
         </div>
         <div class="grid grid-cols-[10rem_1fr] gap-4 border-t rule pt-4">
           <code class="font-mono text-violet-200">reanalyze</code>
-          <span class="text-zinc-400">Create a new current analysis for a dream.</span>
+          <span class="text-zinc-400">Create a local deterministic current analysis.</span>
+        </div>
+        <div class="grid grid-cols-[10rem_1fr] gap-4 border-t rule pt-4">
+          <code class="font-mono text-violet-200">submit-analysis</code>
+          <span class="text-zinc-400">Store agent-returned analysis as the current official Dream Analysis.</span>
         </div>
         <div class="grid grid-cols-[10rem_1fr] gap-4 border-t rule pt-4">
           <code class="font-mono text-violet-200">export</code>
@@ -326,13 +335,44 @@ pnpm --filter @lucidmemo/mcp-server build
         <div class="mt-5 grid gap-3 border-t rule pt-5 text-sm text-zinc-400 sm:grid-cols-2">
           <span><code class="font-mono text-violet-200">record_recall_entry</code></span>
           <span><code class="font-mono text-violet-200">assign_recall_entry</code></span>
+          <span><code class="font-mono text-violet-200">submit_dream_analysis</code></span>
           <span><code class="font-mono text-violet-200">get_dreams</code></span>
           <span><code class="font-mono text-violet-200">get_dream_graph</code></span>
           <span><code class="font-mono text-violet-200">correct_recall_content</code></span>
           <span><code class="font-mono text-violet-200">export_journal</code></span>
         </div>
         <p class="mt-5 border-t rule pt-5 text-sm leading-reading text-zinc-500">
-          The server also provides the prompts <code class="font-mono text-violet-200">lucidmemo/capture</code> and <code class="font-mono text-violet-200">lucidmemo/query</code> so agents follow the Recall Entry-first workflow.
+          The server also provides the prompts <code class="font-mono text-violet-200">lucidmemo/capture</code> and <code class="font-mono text-violet-200">lucidmemo/query</code> so agents follow the Recall Entry-first workflow. Submitted analysis becomes current immediately, while older analyses remain available through provenance export.
+        </p>
+      </div>
+    </section>
+
+    <section class="grid gap-7 border-t rule py-16 lg:grid-cols-[0.36fr_0.64fr]">
+      <div>
+        <p class="section-label">Agent analysis</p>
+        <h2 class="display-heading mt-3 text-3xl text-zinc-50">Agents can return the structured dream analysis.</h2>
+      </div>
+      <div class="panel rounded-2xl p-5 lg:p-6">
+        <pre class="overflow-x-auto text-sm leading-7 text-zinc-300"><code>{
+  "dreamId": "&lt;dream-id&gt;",
+  "canonicalText": "I met my brother at a glowing train station and became lucid.",
+  "sourceAgent": "OpenClaw",
+  "sourceModel": "hermes-analysis",
+  "lucidityLevel": 4,
+  "dreamSigns": ["train station"],
+  "emotions": ["wonder"],
+  "hvdc": {
+    "characters": ["brother"],
+    "settings": ["train station"],
+    "objects": ["ticket"]
+  },
+  "entities": [
+    { "type": "person", "name": "Brother", "context": "waited near the platform" },
+    { "type": "place", "name": "Train Station" }
+  ]
+}</code></pre>
+        <p class="mt-5 border-t rule pt-5 text-sm leading-reading text-zinc-500">
+          The same shape works through MCP <code class="font-mono text-violet-200">submit_dream_analysis</code> or CLI <code class="font-mono text-violet-200">lucidmemo submit-analysis --file analysis.json</code>.
         </p>
       </div>
     </section>
@@ -360,8 +400,8 @@ pnpm --filter @lucidmemo/mcp-server build
           <p class="mt-2 text-sm leading-reading text-zinc-500">Whisper, Deepgram, and other configured providers.</p>
         </div>
         <div class="border-t rule pt-5">
-          <h3 class="font-bold text-zinc-100">Agent-assisted extraction</h3>
-          <p class="mt-2 text-sm leading-reading text-zinc-500">Let OpenClaw, Hermes, and other MCP agents return structured dream analysis before paid services automate it.</p>
+          <h3 class="font-bold text-zinc-100">Hosted automation</h3>
+          <p class="mt-2 text-sm leading-reading text-zinc-500">Optional paid services that run analysis automatically after capture.</p>
         </div>
         <div class="border-t rule pt-5">
           <h3 class="font-bold text-zinc-100">Apps for capture and review</h3>

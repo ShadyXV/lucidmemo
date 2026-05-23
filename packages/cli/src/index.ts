@@ -20,12 +20,14 @@ import {
   type DreamQueryFilters,
   type DreamQueryResult,
   type DreamRecord,
+  type EntityType,
   type HvdCRecord,
   type ISODate,
   type ISODateTime,
   type RecallAudio,
   type RecallEntry,
   type SleepSession,
+  type SubmittedDreamAnalysisInput,
   type TranscriptionStatus,
 } from "@lucidmemo/core";
 import {
@@ -103,6 +105,12 @@ export async function main(argv = process.argv.slice(2), context = DEFAULT_CONTE
     if (parsed.command === "reanalyze") {
       const result = await runReanalyzeCommand(parsed.flags, context);
       context.output.log(`Dream Analysis created: ${result.id}`);
+      return;
+    }
+
+    if (parsed.command === "submit-analysis") {
+      const result = await runSubmitAnalysisCommand(parsed.flags, context);
+      context.output.log(`Dream Analysis submitted: ${result.id}`);
       return;
     }
 
@@ -315,6 +323,27 @@ export async function runReanalyzeCommand(
   return createDreamAnalysis({
     dreamId,
     recalls,
+    analyses,
+    now: context.now().toISOString(),
+  });
+}
+
+export async function runSubmitAnalysisCommand(
+  flags: Record<string, string | boolean>,
+  context: CliContext = DEFAULT_CONTEXT,
+): Promise<DreamAnalysis> {
+  const config = loadCliConfig(flags, context);
+  const databaseUrl = databasePathToUrl(config.database.path, context.homeDir);
+  context.ensureDir(dirname(fileURLToPath(databaseUrl)));
+  await initializeDatabase({ url: databaseUrl });
+
+  const input = parseSubmittedAnalysisFile(requiredFlag(flags, "file"), context);
+  const db = createDatabase({ url: databaseUrl });
+  const dreams = new LibSqlDreamRepository(db);
+  const analyses = new LibSqlDreamAnalysisRepository(db);
+  return createSubmittedDreamAnalysis({
+    input,
+    dreams,
     analyses,
     now: context.now().toISOString(),
   });
@@ -555,6 +584,63 @@ async function createDreamAnalysis(input: {
   return input.analyses.createCurrent(bundle);
 }
 
+export async function createSubmittedDreamAnalysis(input: {
+  input: SubmittedDreamAnalysisInput;
+  dreams: LibSqlDreamRepository;
+  analyses: LibSqlDreamAnalysisRepository;
+  now: ISODateTime;
+}): Promise<DreamAnalysis> {
+  const submitted = normalizeSubmittedAnalysis(input.input);
+  const dream = await input.dreams.findById(submitted.dreamId);
+  if (!dream) {
+    throw new Error(`Dream Record not found: ${submitted.dreamId}`);
+  }
+
+  const embedding = await new HashEmbeddingAdapter().embed({ text: submitted.canonicalText });
+  const analysisId = randomUUID();
+  const bundle: DreamAnalysisBundle = {
+    analysis: {
+      id: analysisId,
+      dreamId: submitted.dreamId,
+      createdAt: input.now,
+      isCurrent: true,
+      sourceAdapter: "agent-submitted",
+      sourceModel: `${submitted.sourceAgent}/${submitted.sourceModel}`,
+      promptVersion: submitted.promptVersion ?? "agent-analysis-v1",
+      correctionSource: "agent",
+      canonicalText: submitted.canonicalText,
+      lucidityLevel: submitted.lucidityLevel ?? null,
+      inductionTech: submitted.inductionTech ?? null,
+      realityCheck: submitted.realityCheck ?? null,
+      controlLevel: submitted.controlLevel ?? null,
+      onsetType: submitted.onsetType ?? null,
+      dreamSigns: submitted.dreamSigns ?? [],
+      emotions: submitted.emotions ?? [],
+      embedding: embedding.embedding,
+      deletedAt: null,
+      deleteReason: null,
+    },
+    hvdcRecord: buildHvdCRecord(analysisId, {
+      characters: submitted.hvdc?.characters ?? [],
+      socialInteractions: submitted.hvdc?.socialInteractions ?? [],
+      activities: submitted.hvdc?.activities ?? [],
+      emotions: submitted.hvdc?.emotions ?? [],
+      settings: submitted.hvdc?.settings ?? [],
+      objects: submitted.hvdc?.objects ?? [],
+      outcomes: submitted.hvdc?.outcomes ?? [],
+    }),
+    entities: submitted.entities.map((entity) => ({
+      id: `${entity.type}:${normalizeEntityName(entity.name)}`,
+      type: entity.type,
+      name: entity.name.trim(),
+      context: entity.context ?? null,
+      embedding: null,
+    })),
+  };
+
+  return input.analyses.createCurrent(bundle);
+}
+
 function buildHvdCRecord(analysisId: string, hvdc: HvdCRecordFields): HvdCRecord {
   return {
     analysisId,
@@ -576,6 +662,147 @@ interface HvdCRecordFields {
   settings: unknown[];
   objects: unknown[];
   outcomes: unknown[];
+}
+
+function parseSubmittedAnalysisFile(path: string, context: CliContext): SubmittedDreamAnalysisInput {
+  const raw = Buffer.from(context.readFile(path)).toString("utf8");
+  return normalizeSubmittedAnalysis(JSON.parse(raw) as unknown);
+}
+
+function normalizeSubmittedAnalysis(input: unknown): SubmittedDreamAnalysisInput & {
+  entities: NonNullable<SubmittedDreamAnalysisInput["entities"]>;
+} {
+  if (!isRecord(input)) {
+    throw new Error("Submitted analysis must be a JSON object.");
+  }
+
+  const dreamId = requiredStringField(input, "dreamId");
+  const canonicalText = requiredStringField(input, "canonicalText").trim();
+  const sourceAgent = requiredStringField(input, "sourceAgent").trim();
+  const sourceModel = requiredStringField(input, "sourceModel").trim();
+  if (!canonicalText) {
+    throw new Error("Submitted analysis requires non-empty canonicalText.");
+  }
+
+  return {
+    dreamId,
+    canonicalText,
+    sourceAgent,
+    sourceModel,
+    promptVersion: optionalStringField(input, "promptVersion") ?? undefined,
+    lucidityLevel: optionalNumberField(input, "lucidityLevel"),
+    inductionTech: optionalStringField(input, "inductionTech"),
+    realityCheck: optionalStringField(input, "realityCheck"),
+    controlLevel: optionalNumberField(input, "controlLevel"),
+    onsetType: optionalStringField(input, "onsetType"),
+    dreamSigns: optionalStringArrayField(input, "dreamSigns"),
+    emotions: optionalStringArrayField(input, "emotions"),
+    hvdc: normalizeHvdC(input.hvdc),
+    entities: normalizeSubmittedEntities(input.entities),
+  };
+}
+
+function normalizeHvdC(value: unknown): HvdCRecordFields {
+  const input = isRecord(value) ? value : {};
+  return {
+    characters: optionalArrayField(input, "characters"),
+    socialInteractions: optionalArrayField(input, "socialInteractions"),
+    activities: optionalArrayField(input, "activities"),
+    emotions: optionalArrayField(input, "emotions"),
+    settings: optionalArrayField(input, "settings"),
+    objects: optionalArrayField(input, "objects"),
+    outcomes: optionalArrayField(input, "outcomes"),
+  };
+}
+
+function normalizeSubmittedEntities(value: unknown): Array<{ type: EntityType; name: string; context: string | null }> {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("entities must be an array.");
+  }
+
+  const byId = new Map<string, { type: EntityType; name: string; context: string | null }>();
+  for (const entity of value) {
+    if (!isRecord(entity)) {
+      throw new Error("Each submitted entity must be an object.");
+    }
+    const type = parseEntityType(requiredStringField(entity, "type"));
+    const name = requiredStringField(entity, "name").trim();
+    if (!name) {
+      throw new Error("Submitted entity name must not be empty.");
+    }
+    const normalized = `${type}:${normalizeEntityName(name)}`;
+    if (!byId.has(normalized)) {
+      byId.set(normalized, {
+        type,
+        name,
+        context: optionalStringField(entity, "context"),
+      });
+    }
+  }
+  return [...byId.values()];
+}
+
+function parseEntityType(value: string): EntityType {
+  if (value === "person" || value === "place" || value === "symbol" || value === "object" || value === "emotion") {
+    return value;
+  }
+  throw new Error("Submitted entity type must be one of: person, place, symbol, object, emotion.");
+}
+
+function normalizeEntityName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function requiredStringField(input: Record<string, unknown>, key: string): string {
+  const value = input[key];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Submitted analysis requires ${key}.`);
+  }
+  return value;
+}
+
+function optionalStringField(input: Record<string, unknown>, key: string): string | null {
+  const value = input[key];
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new Error(`${key} must be a string.`);
+  }
+  return value.trim() || null;
+}
+
+function optionalNumberField(input: Record<string, unknown>, key: string): number | null {
+  const value = input[key];
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${key} must be a number.`);
+  }
+  return value;
+}
+
+function optionalStringArrayField(input: Record<string, unknown>, key: string): string[] {
+  return optionalArrayField(input, key).map((item) => String(item).trim()).filter((item) => item.length > 0);
+}
+
+function optionalArrayField(input: Record<string, unknown>, key: string): unknown[] {
+  const value = input[key];
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${key} must be an array.`);
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildRecallAudio(input: {
@@ -1035,6 +1262,7 @@ function printHelp(context: CliContext): void {
   lucidmemo record --audio ./dream.m4a --duration-ms 120000
   lucidmemo sleep --session-date YYYY-MM-DD [--sleep-started-at ISO] [--woke-at ISO] [--quality 1-5]
   lucidmemo reanalyze --dream-id <id>
+  lucidmemo submit-analysis --file analysis.json
   lucidmemo index
   lucidmemo query --text "hands lucid" [--from YYYY-MM-DD] [--lucidity 3+]
   lucidmemo graph

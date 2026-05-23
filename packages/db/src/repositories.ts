@@ -5,6 +5,7 @@ import type {
   CreateRecallEntryInput,
   DreamAnalysisBundle,
   DreamAnalysisRepository,
+  EntityType,
   DreamRepository,
   EntityCooccurrence,
   EntityMerge,
@@ -222,7 +223,7 @@ export class LibSqlDreamAnalysisRepository implements DreamAnalysisRepository {
         bundle.entities.map((entity) => ({
           analysisId: bundle.analysis.id,
           entityId: entity.id,
-          context: null,
+          context: entity.context ?? null,
         })),
       );
     }
@@ -304,6 +305,7 @@ interface CurrentAnalysisRow {
   settings: unknown[];
   objects: unknown[];
   outcomes: unknown[];
+  entities: Array<{ type: EntityType; name: string }>;
 }
 
 export class LibSqlDreamQueryRepository {
@@ -340,6 +342,21 @@ export class LibSqlDreamQueryRepository {
         ),
       );
 
+    const entityRows = await this.db
+      .select({
+        analysisId: dreamEntities.analysisId,
+        type: entities.type,
+        name: entities.name,
+      })
+      .from(dreamEntities)
+      .innerJoin(entities, eq(entities.id, dreamEntities.entityId));
+    const entitiesByAnalysis = new Map<string, Array<{ type: EntityType; name: string }>>();
+    for (const row of entityRows) {
+      const analysisEntities = entitiesByAnalysis.get(row.analysisId) ?? [];
+      analysisEntities.push({ type: row.type, name: row.name });
+      entitiesByAnalysis.set(row.analysisId, analysisEntities);
+    }
+
     return rows.map((row) => ({
       ...row,
       embedding: row.embedding ? new Uint8Array(row.embedding) : null,
@@ -351,6 +368,7 @@ export class LibSqlDreamQueryRepository {
       settings: asArray(row.settings),
       objects: asArray(row.objects),
       outcomes: asArray(row.outcomes),
+      entities: entitiesByAnalysis.get(row.analysisId) ?? [],
     }));
   }
 
@@ -391,6 +409,7 @@ export class LibSqlDreamQueryRepository {
         ...terms(row.characters, "person"),
         ...terms(row.settings, "setting"),
         ...terms(row.objects, "object"),
+        ...row.entities.map((entity) => term(entity.name, entity.type)),
       ]);
 
       for (const node of nodes) {
@@ -631,11 +650,15 @@ function terms(values: unknown[], type: string): Array<{ id: string; label: stri
   return values
     .map((value) => String(value).trim())
     .filter((value) => value.length > 0)
-    .map((label) => ({
-      id: `${type}:${label.toLowerCase()}`,
-      label,
-      type,
-    }));
+    .map((label) => term(label, type));
+}
+
+function term(label: string, type: string): { id: string; label: string; type: string } {
+  return {
+    id: `${type}:${label.trim().toLowerCase()}`,
+    label: label.trim(),
+    type,
+  };
 }
 
 function uniqueGraphTerms(nodes: Array<{ id: string; label: string; type: string }>) {

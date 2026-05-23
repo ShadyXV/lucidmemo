@@ -1,5 +1,6 @@
 import type {
   DreamAnalysis,
+  DreamEntity,
   DreamRecord,
   Entity,
   EntityCooccurrence,
@@ -24,7 +25,7 @@ export interface AssignRecallEntryInput {
 export interface DreamAnalysisBundle {
   analysis: DreamAnalysis;
   hvdcRecord: HvdCRecord;
-  entities: Entity[];
+  entities: Array<Entity & Pick<DreamEntity, "context">>;
 }
 
 export interface SleepSessionRepository {

@@ -100,6 +100,37 @@ export interface Entity {
   embedding: Uint8Array | null;
 }
 
+export interface SubmittedDreamEntityInput {
+  type: EntityType;
+  name: string;
+  context?: string | null;
+}
+
+export interface SubmittedDreamAnalysisInput {
+  dreamId: UUID;
+  canonicalText: string;
+  sourceAgent: string;
+  sourceModel: string;
+  promptVersion?: string;
+  lucidityLevel?: number | null;
+  inductionTech?: string | null;
+  realityCheck?: string | null;
+  controlLevel?: number | null;
+  onsetType?: string | null;
+  dreamSigns?: string[];
+  emotions?: string[];
+  hvdc?: Partial<{
+    characters: unknown[];
+    socialInteractions: unknown[];
+    activities: unknown[];
+    emotions: unknown[];
+    settings: unknown[];
+    objects: unknown[];
+    outcomes: unknown[];
+  }>;
+  entities?: SubmittedDreamEntityInput[];
+}
+
 export interface EntityMerge {
   id: UUID;
   canonicalEntityId: UUID;
