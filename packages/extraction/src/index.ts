@@ -2,37 +2,9 @@ export type LucidmemoPackage = "extraction";
 
 export const packageName: LucidmemoPackage = "extraction";
 
-export interface ExtractionInput {
-  text: string;
-}
+import type { ExtractionAdapter, ExtractionInput, ExtractionResult } from "@lucidmemo/core";
 
-export interface ExtractionResult {
-  canonicalText: string;
-  lucidityLevel: number | null;
-  inductionTech: string | null;
-  realityCheck: string | null;
-  controlLevel: number | null;
-  onsetType: string | null;
-  dreamSigns: string[];
-  emotions: string[];
-  hvdc: {
-    characters: unknown[];
-    socialInteractions: unknown[];
-    activities: unknown[];
-    emotions: unknown[];
-    settings: unknown[];
-    objects: unknown[];
-    outcomes: unknown[];
-  };
-  sourceAdapter: string;
-  sourceModel: string;
-  promptVersion: string;
-}
-
-export interface ExtractionAdapter {
-  readonly name: string;
-  extract(input: ExtractionInput): Promise<ExtractionResult>;
-}
+export type { ExtractionAdapter, ExtractionInput, ExtractionResult } from "@lucidmemo/core";
 
 export class HeuristicExtractionAdapter implements ExtractionAdapter {
   readonly name = "heuristic-extraction";

@@ -2,20 +2,9 @@ export type LucidmemoPackage = "embedding";
 
 export const packageName: LucidmemoPackage = "embedding";
 
-export interface EmbeddingInput {
-  text: string;
-}
+import type { EmbeddingAdapter, EmbeddingInput, EmbeddingResult } from "@lucidmemo/core";
 
-export interface EmbeddingResult {
-  embedding: Uint8Array;
-  sourceAdapter: string;
-  sourceModel: string;
-}
-
-export interface EmbeddingAdapter {
-  readonly name: string;
-  embed(input: EmbeddingInput): Promise<EmbeddingResult>;
-}
+export type { EmbeddingAdapter, EmbeddingInput, EmbeddingResult } from "@lucidmemo/core";
 
 export class HashEmbeddingAdapter implements EmbeddingAdapter {
   readonly name = "hash-embedding";

@@ -7,26 +7,34 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 
 import {
+  createDreamAnalysis,
+  createSubmittedDreamAnalysis,
   DEFAULT_DATABASE_PATH,
   getDefaultConfigPath,
   loadLucidmemoConfig,
+  normalizeEntityName,
+  normalizeSubmittedAnalysisInput,
   planAudioRetention,
   validateAudioInput,
   type AudioRetention,
   type CaptureMethod,
   type DreamAnalysis,
-  type DreamAnalysisBundle,
+  type DreamAnalysisRepository,
   type DreamGraph,
   type DreamQueryFilters,
   type DreamQueryResult,
   type DreamRecord,
+  type DreamRepository,
   type EntityType,
   type HvdCRecord,
+  type HvdCRecordFields,
   type ISODate,
   type ISODateTime,
   type RecallAudio,
   type RecallEntry,
+  type RecallEntryRepository,
   type SleepSession,
+  type SleepSessionRepository,
   type SubmittedDreamAnalysisInput,
   type TranscriptionStatus,
 } from "@lucidmemo/core";
@@ -256,6 +264,8 @@ export async function runRecordCommand(
         dreamId: assignment.dream.id,
         recalls,
         analyses,
+        extraction: new HeuristicExtractionAdapter(),
+        embedding: new HashEmbeddingAdapter(),
         now,
       })
     : null;
@@ -324,6 +334,8 @@ export async function runReanalyzeCommand(
     dreamId,
     recalls,
     analyses,
+    extraction: new HeuristicExtractionAdapter(),
+    embedding: new HashEmbeddingAdapter(),
     now: context.now().toISOString(),
   });
 }
@@ -342,9 +354,10 @@ export async function runSubmitAnalysisCommand(
   const dreams = new LibSqlDreamRepository(db);
   const analyses = new LibSqlDreamAnalysisRepository(db);
   return createSubmittedDreamAnalysis({
-    input,
+    submitted: input,
     dreams,
     analyses,
+    embedding: new HashEmbeddingAdapter(),
     now: context.now().toISOString(),
   });
 }
@@ -454,6 +467,8 @@ export async function runRecallCorrectCommand(
         dreamId: replacement.dreamId,
         recalls,
         analyses,
+        extraction: new HeuristicExtractionAdapter(),
+        embedding: new HashEmbeddingAdapter(),
         now,
       })
     : null;
@@ -535,160 +550,22 @@ async function prepareCliDatabase(flags: Record<string, string | boolean>, conte
   return { config, databaseUrl };
 }
 
-async function createDreamAnalysis(input: {
-  dreamId: string;
-  recalls: LibSqlRecallEntryRepository;
-  analyses: LibSqlDreamAnalysisRepository;
-  now: ISODateTime;
-}): Promise<DreamAnalysis> {
-  const recallEntries = await input.recalls.listByDreamId(input.dreamId);
-  const canonicalSourceText = recallEntries
-    .filter((entry) => entry.text !== null && entry.text.trim().length > 0)
-    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
-    .map((entry) => entry.text)
-    .join("\n\n");
-
-  if (!canonicalSourceText) {
-    throw new Error("Dream Analysis requires at least one text Recall Entry.");
-  }
-
-  const extraction = await new HeuristicExtractionAdapter().extract({ text: canonicalSourceText });
-  const embedding = await new HashEmbeddingAdapter().embed({ text: extraction.canonicalText });
-  const analysisId = randomUUID();
-  const bundle: DreamAnalysisBundle = {
-    analysis: {
-      id: analysisId,
-      dreamId: input.dreamId,
-      createdAt: input.now,
-      isCurrent: true,
-      sourceAdapter: extraction.sourceAdapter,
-      sourceModel: extraction.sourceModel,
-      promptVersion: extraction.promptVersion,
-      correctionSource: null,
-      canonicalText: extraction.canonicalText,
-      lucidityLevel: extraction.lucidityLevel,
-      inductionTech: extraction.inductionTech,
-      realityCheck: extraction.realityCheck,
-      controlLevel: extraction.controlLevel,
-      onsetType: extraction.onsetType,
-      dreamSigns: extraction.dreamSigns,
-      emotions: extraction.emotions,
-      embedding: embedding.embedding,
-      deletedAt: null,
-      deleteReason: null,
-    },
-    hvdcRecord: buildHvdCRecord(analysisId, extraction.hvdc),
-    entities: [],
-  };
-
-  return input.analyses.createCurrent(bundle);
-}
-
-export async function createSubmittedDreamAnalysis(input: {
-  input: SubmittedDreamAnalysisInput;
-  dreams: LibSqlDreamRepository;
-  analyses: LibSqlDreamAnalysisRepository;
-  now: ISODateTime;
-}): Promise<DreamAnalysis> {
-  const submitted = normalizeSubmittedAnalysis(input.input);
-  const dream = await input.dreams.findById(submitted.dreamId);
-  if (!dream) {
-    throw new Error(`Dream Record not found: ${submitted.dreamId}`);
-  }
-
-  const embedding = await new HashEmbeddingAdapter().embed({ text: submitted.canonicalText });
-  const analysisId = randomUUID();
-  const bundle: DreamAnalysisBundle = {
-    analysis: {
-      id: analysisId,
-      dreamId: submitted.dreamId,
-      createdAt: input.now,
-      isCurrent: true,
-      sourceAdapter: "agent-submitted",
-      sourceModel: `${submitted.sourceAgent}/${submitted.sourceModel}`,
-      promptVersion: submitted.promptVersion ?? "agent-analysis-v1",
-      correctionSource: "agent",
-      canonicalText: submitted.canonicalText,
-      lucidityLevel: submitted.lucidityLevel ?? null,
-      inductionTech: submitted.inductionTech ?? null,
-      realityCheck: submitted.realityCheck ?? null,
-      controlLevel: submitted.controlLevel ?? null,
-      onsetType: submitted.onsetType ?? null,
-      dreamSigns: submitted.dreamSigns ?? [],
-      emotions: submitted.emotions ?? [],
-      embedding: embedding.embedding,
-      deletedAt: null,
-      deleteReason: null,
-    },
-    hvdcRecord: buildHvdCRecord(analysisId, {
-      characters: submitted.hvdc?.characters ?? [],
-      socialInteractions: submitted.hvdc?.socialInteractions ?? [],
-      activities: submitted.hvdc?.activities ?? [],
-      emotions: submitted.hvdc?.emotions ?? [],
-      settings: submitted.hvdc?.settings ?? [],
-      objects: submitted.hvdc?.objects ?? [],
-      outcomes: submitted.hvdc?.outcomes ?? [],
-    }),
-    entities: submitted.entities.map((entity) => ({
-      id: `${entity.type}:${normalizeEntityName(entity.name)}`,
-      type: entity.type,
-      name: entity.name.trim(),
-      context: entity.context ?? null,
-      embedding: null,
-    })),
-  };
-
-  return input.analyses.createCurrent(bundle);
-}
-
-function buildHvdCRecord(analysisId: string, hvdc: HvdCRecordFields): HvdCRecord {
-  return {
-    analysisId,
-    characters: hvdc.characters,
-    socialInteractions: hvdc.socialInteractions,
-    activities: hvdc.activities,
-    emotions: hvdc.emotions,
-    settings: hvdc.settings,
-    objects: hvdc.objects,
-    outcomes: hvdc.outcomes,
-  };
-}
-
-interface HvdCRecordFields {
-  characters: unknown[];
-  socialInteractions: unknown[];
-  activities: unknown[];
-  emotions: unknown[];
-  settings: unknown[];
-  objects: unknown[];
-  outcomes: unknown[];
-}
 
 function parseSubmittedAnalysisFile(path: string, context: CliContext): SubmittedDreamAnalysisInput {
   const raw = Buffer.from(context.readFile(path)).toString("utf8");
   return normalizeSubmittedAnalysis(JSON.parse(raw) as unknown);
 }
 
-function normalizeSubmittedAnalysis(input: unknown): SubmittedDreamAnalysisInput & {
-  entities: NonNullable<SubmittedDreamAnalysisInput["entities"]>;
-} {
+function normalizeSubmittedAnalysis(input: unknown): ReturnType<typeof normalizeSubmittedAnalysisInput> {
   if (!isRecord(input)) {
     throw new Error("Submitted analysis must be a JSON object.");
   }
 
-  const dreamId = requiredStringField(input, "dreamId");
-  const canonicalText = requiredStringField(input, "canonicalText").trim();
-  const sourceAgent = requiredStringField(input, "sourceAgent").trim();
-  const sourceModel = requiredStringField(input, "sourceModel").trim();
-  if (!canonicalText) {
-    throw new Error("Submitted analysis requires non-empty canonicalText.");
-  }
-
-  return {
-    dreamId,
-    canonicalText,
-    sourceAgent,
-    sourceModel,
+  return normalizeSubmittedAnalysisInput({
+    dreamId: requiredStringField(input, "dreamId"),
+    canonicalText: requiredStringField(input, "canonicalText"),
+    sourceAgent: requiredStringField(input, "sourceAgent"),
+    sourceModel: requiredStringField(input, "sourceModel"),
     promptVersion: optionalStringField(input, "promptVersion") ?? undefined,
     lucidityLevel: optionalNumberField(input, "lucidityLevel"),
     inductionTech: optionalStringField(input, "inductionTech"),
@@ -698,8 +575,8 @@ function normalizeSubmittedAnalysis(input: unknown): SubmittedDreamAnalysisInput
     dreamSigns: optionalStringArrayField(input, "dreamSigns"),
     emotions: optionalStringArrayField(input, "emotions"),
     hvdc: normalizeHvdC(input.hvdc),
-    entities: normalizeSubmittedEntities(input.entities),
-  };
+    entities: parseEntityArray(input.entities),
+  });
 }
 
 function normalizeHvdC(value: unknown): HvdCRecordFields {
@@ -715,34 +592,23 @@ function normalizeHvdC(value: unknown): HvdCRecordFields {
   };
 }
 
-function normalizeSubmittedEntities(value: unknown): Array<{ type: EntityType; name: string; context: string | null }> {
+function parseEntityArray(value: unknown): Array<{ type: EntityType; name: string; context: string | null }> {
   if (value === undefined) {
     return [];
   }
   if (!Array.isArray(value)) {
     throw new Error("entities must be an array.");
   }
-
-  const byId = new Map<string, { type: EntityType; name: string; context: string | null }>();
-  for (const entity of value) {
+  return value.map((entity) => {
     if (!isRecord(entity)) {
       throw new Error("Each submitted entity must be an object.");
     }
-    const type = parseEntityType(requiredStringField(entity, "type"));
-    const name = requiredStringField(entity, "name").trim();
-    if (!name) {
-      throw new Error("Submitted entity name must not be empty.");
-    }
-    const normalized = `${type}:${normalizeEntityName(name)}`;
-    if (!byId.has(normalized)) {
-      byId.set(normalized, {
-        type,
-        name,
-        context: optionalStringField(entity, "context"),
-      });
-    }
-  }
-  return [...byId.values()];
+    return {
+      type: parseEntityType(requiredStringField(entity, "type")),
+      name: requiredStringField(entity, "name"),
+      context: optionalStringField(entity, "context"),
+    };
+  });
 }
 
 function parseEntityType(value: string): EntityType {
@@ -752,9 +618,6 @@ function parseEntityType(value: string): EntityType {
   throw new Error("Submitted entity type must be one of: person, place, symbol, object, emotion.");
 }
 
-function normalizeEntityName(value: string): string {
-  return value.trim().toLowerCase();
-}
 
 function requiredStringField(input: Record<string, unknown>, key: string): string {
   const value = input[key];
@@ -850,8 +713,8 @@ function buildRecallAudio(input: {
 
 async function resolveAssignment(input: {
   flags: Record<string, string | boolean>;
-  sleepSessions: LibSqlSleepSessionRepository;
-  dreams: LibSqlDreamRepository;
+  sleepSessions: SleepSessionRepository;
+  dreams: DreamRepository;
   now: ISODateTime;
 }): Promise<{ dream: DreamRecord | null; sleepSession: SleepSession | null }> {
   const dreamId = optionalFlag(input.flags, "dream-id");
@@ -892,7 +755,7 @@ async function resolveAssignment(input: {
 
 async function findExistingSleepSession(
   flags: Record<string, string | boolean>,
-  sleepSessions: LibSqlSleepSessionRepository,
+  sleepSessions: SleepSessionRepository,
 ): Promise<SleepSession | null> {
   const sleepSessionId = optionalFlag(flags, "sleep-session-id");
   if (!sleepSessionId) {

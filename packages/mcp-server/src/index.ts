@@ -11,7 +11,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import {
-  createSubmittedDreamAnalysis,
   runGraphCommand,
   runDeleteCommand,
   runDoctorStorageCommand,
@@ -25,7 +24,8 @@ import {
   runRecordCommand,
   runSleepCommand,
 } from "@lucidmemo/cli";
-import type { EntityMerge, RecallEntry, UUID } from "@lucidmemo/core";
+import { createSubmittedDreamAnalysis, normalizeSubmittedAnalysisInput, type EntityMerge, type RecallEntry, type UUID } from "@lucidmemo/core";
+import { HashEmbeddingAdapter } from "@lucidmemo/embedding";
 import {
   createDatabase,
   initializeDatabase,
@@ -600,9 +600,10 @@ async function submitDreamAnalysis(
   const { databaseUrl } = await prepareDb(args, context);
   const db = createDatabase({ url: databaseUrl });
   const analysis = await createSubmittedDreamAnalysis({
-    input: args,
+    submitted: normalizeSubmittedAnalysisInput(args),
     dreams: new LibSqlDreamRepository(db),
     analyses: new LibSqlDreamAnalysisRepository(db),
+    embedding: new HashEmbeddingAdapter(),
     now: context.now().toISOString(),
   });
 
