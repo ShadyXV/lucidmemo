@@ -10,10 +10,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "drizzle-kit generate --config ../../drizzle.config.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --test"
   },
   "dependencies": {
-    "@lucidmemo/core": "workspace:*"
+    "@libsql/client": "^0.17.3",
+    "@lucidmemo/core": "workspace:*",
+    "drizzle-orm": "^0.45.2"
   }
 }
