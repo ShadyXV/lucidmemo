@@ -154,3 +154,9 @@ Most MCP clients accept a server entry like this. Use an absolute path unless yo
 The MCP server exposes the same capture model as the CLI: record recall immediately, leave ambiguous linkage unassigned, and ask for clarification instead of silently merging late recall. It also exposes `submit_dream_analysis` so an agent can store structured analysis as the official current Dream Analysis.
 
 Useful MCP tools include `record_recall_entry`, `assign_recall_entry`, `submit_dream_analysis`, `get_dreams`, `get_dream`, `get_dream_graph`, `correct_recall_content`, and `export_journal`. The server also provides `lucidmemo/capture` and `lucidmemo/query` prompts for agent workflows.
+
+## Agent Skills
+
+The `skills/` directory contains optional workflow skills for agent clients. They do not replace the CLI or MCP server; they teach an agent how to combine MCP tools for capture, analysis, query, and export while preserving lucidmemo's Recall Entry-first model.
+
+Start with `skills/lucidmemo-capture` for morning recall capture, then add `skills/lucidmemo-analysis`, `skills/lucidmemo-query`, or `skills/lucidmemo-export` depending on what your agent client supports.
